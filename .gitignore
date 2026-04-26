@@ -1,0 +1,12 @@
+.venv/
+node_modules/
+backend/data/trading.db
+backend/.env
+.env
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+.vite/
+frontend/node_modules/
+frontend/dist/

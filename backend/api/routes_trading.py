@@ -14,20 +14,31 @@ router = APIRouter(tags=["trading"])
 
 @router.get("/api/status")
 def status():
-    return {"running": ENGINE.running}
+    return {
+        "running": ENGINE.running,
+        "mode": "LOCAL_PAPER",
+        "source": "DETERMINISTIC_PAPER_SCENARIO",
+        "binance_orders": False,
+    }
 
 
 @router.post("/api/start")
 async def start(db: Session = Depends(get_db)):
     ENGINE.running = True
-    await ENGINE.start_once(db)
-    return {"ok": True, "running": True}
+    cycle = await ENGINE.start_once(db)
+    return {
+        "ok": True,
+        "running": True,
+        "mode": "LOCAL_PAPER",
+        "binance_orders": False,
+        "cycle": cycle,
+    }
 
 
 @router.post("/api/stop")
 def stop():
     ENGINE.running = False
-    return {"ok": True, "running": False}
+    return {"ok": True, "running": False, "mode": "LOCAL_PAPER"}
 
 
 @router.get("/api/positions")

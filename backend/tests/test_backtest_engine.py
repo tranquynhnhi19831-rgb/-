@@ -74,8 +74,8 @@ def test_default_100u_profile_caps_notional_by_margin_fraction_and_leverage():
         ]
     )
     cfg = BacktestConfig(fee_rate=0.0, slippage_bps=0.0, max_hold_bars=2)
-    # Risk sizing would allow 0.5 / 5 = 0.1 units, but margin cap is 100 * 10% * 3x = 30U => 0.3 units.
-    # Here risk sizing is tighter, so change the stop to make risk sizing much larger than margin cap.
+    # Stop is very close, so risk sizing wants a large position; the 100U profile
+    # caps notional at 100 * 10% margin * 3x = 30U.
     signal = CandidateSignal(index=0, setup="TEST", side="LONG", invalidation_reference=99.9)
     trade = BacktestEngine(cfg).run(bars, [signal]).trades[0]
 
@@ -133,3 +133,27 @@ def test_overlapping_signals_are_skipped_while_position_is_open():
 
     assert len(result.trades) == 1
     assert result.skipped_signals == 1
+
+
+def test_adverse_gap_through_stop_fills_at_open_not_ideal_stop_price():
+    bars = _bars(
+        [
+            (100.0, 100.2, 99.8, 100.0),
+            (100.0, 100.5, 99.5, 100.2),
+            (97.0, 98.0, 96.0, 97.5),
+        ]
+    )
+    cfg = BacktestConfig(
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        risk_per_trade=0.01,
+        reward_risk=10.0,
+        leverage=10,
+        max_margin_fraction=1.0,
+    )
+    signal = CandidateSignal(index=0, setup="TEST", side="LONG", invalidation_reference=99.0)
+    trade = BacktestEngine(cfg).run(bars, [signal]).trades[0]
+
+    assert trade.exit_reason == "STOP_GAP"
+    assert trade.exit_price == 97.0
+    assert trade.net_pnl < -1.0

@@ -16,6 +16,12 @@ from strategy.jianghe.pullback import (
     evaluate_trend_pullback,
     evaluate_trend_pullback_from_structure,
 )
+from strategy.jianghe.second_push import (
+    SecondPushConfig,
+    SecondPushEvaluation,
+    evaluate_second_push_failure,
+    evaluate_second_push_failure_from_structure,
+)
 from strategy.jianghe.structure import classify_structure, find_confirmed_swings
 from strategy.jianghe.strength import calculate_directional_strength, compare_strength
 from strategy.jianghe.types import MarketRegime, StrengthSnapshot, StructureSnapshot
@@ -26,6 +32,8 @@ __all__ = [
     "MarketRegime",
     "PullbackConfig",
     "PullbackEvaluation",
+    "SecondPushConfig",
+    "SecondPushEvaluation",
     "StrengthSnapshot",
     "StructureSnapshot",
     "calculate_directional_strength",
@@ -33,6 +41,8 @@ __all__ = [
     "compare_strength",
     "evaluate_breakout_continuation",
     "evaluate_breakout_continuation_from_structure",
+    "evaluate_second_push_failure",
+    "evaluate_second_push_failure_from_structure",
     "evaluate_trend_pullback",
     "evaluate_trend_pullback_from_structure",
     "find_confirmed_swings",

@@ -29,6 +29,12 @@ def _require_order_routes_enabled() -> None:
         )
 
 
+def _required(payload: dict, key: str):
+    if key not in payload or payload[key] is None or payload[key] == "":
+        raise ValueError(f"explicit field required: {key}")
+    return payload[key]
+
+
 def _bad_request(exc: Exception):
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -64,14 +70,19 @@ def testnet_snapshot():
 
 @router.post("/order-test")
 def testnet_order_test(payload: dict):
-    """Signed Binance order validation; `/fapi/v1/order/test` creates no order."""
+    """Signed Binance order validation; `/fapi/v1/order/test` creates no order.
+
+    All order semantics must be explicit even though this endpoint creates no
+    order. This prevents a future caller from accidentally inheriting default
+    symbol/side/notional behavior.
+    """
     try:
         return _gateway().test_market_order(
-            symbol=str(payload.get("symbol", "BTC/USDT")),
-            side=str(payload.get("side", "BUY")),
-            target_notional_usdt=float(payload.get("target_notional_usdt", 5.0)),
-            client_order_id=str(payload.get("client_order_id", "")),
-            confirm=payload.get("confirm"),
+            symbol=str(_required(payload, "symbol")),
+            side=str(_required(payload, "side")),
+            target_notional_usdt=float(_required(payload, "target_notional_usdt")),
+            client_order_id=str(_required(payload, "client_order_id")),
+            confirm=str(_required(payload, "confirm")),
         )
     except Exception as exc:
         _bad_request(exc)
@@ -79,15 +90,15 @@ def testnet_order_test(payload: dict):
 
 @router.post("/market-order")
 def testnet_market_order(payload: dict):
-    """Place a virtual-money Testnet order only when the private runtime enables it."""
+    """Place a virtual-money Demo order only when the private runtime enables it."""
     _require_order_routes_enabled()
     try:
         return _gateway().place_market_order(
-            symbol=str(payload.get("symbol", "BTC/USDT")),
-            side=str(payload.get("side", "BUY")),
-            target_notional_usdt=float(payload.get("target_notional_usdt", 5.0)),
-            client_order_id=str(payload.get("client_order_id", "")),
-            confirm=payload.get("confirm"),
+            symbol=str(_required(payload, "symbol")),
+            side=str(_required(payload, "side")),
+            target_notional_usdt=float(_required(payload, "target_notional_usdt")),
+            client_order_id=str(_required(payload, "client_order_id")),
+            confirm=str(_required(payload, "confirm")),
         )
     except Exception as exc:
         _bad_request(exc)
@@ -106,9 +117,9 @@ def testnet_cancel_order(payload: dict):
     _require_order_routes_enabled()
     try:
         return _gateway().cancel_order(
-            symbol=str(payload.get("symbol", "BTC/USDT")),
-            order_id=str(payload.get("order_id", "")),
-            confirm=payload.get("confirm"),
+            symbol=str(_required(payload, "symbol")),
+            order_id=str(_required(payload, "order_id")),
+            confirm=str(_required(payload, "confirm")),
         )
     except Exception as exc:
         _bad_request(exc)
@@ -119,9 +130,9 @@ def testnet_close_position(payload: dict):
     _require_order_routes_enabled()
     try:
         return _gateway().close_position(
-            symbol=str(payload.get("symbol", "BTC/USDT")),
-            client_order_id=str(payload.get("client_order_id", "")),
-            confirm=payload.get("confirm"),
+            symbol=str(_required(payload, "symbol")),
+            client_order_id=str(_required(payload, "client_order_id")),
+            confirm=str(_required(payload, "confirm")),
         )
     except Exception as exc:
         _bad_request(exc)

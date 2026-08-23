@@ -20,7 +20,12 @@ function Read-HiddenText([string]$Prompt) {
 }
 
 function Normalize-ProxyUrl([string]$RawValue) {
-    $value = ($RawValue ?? "").Trim()
+    if ($null -eq $RawValue) {
+        $value = ""
+    }
+    else {
+        $value = $RawValue.Trim()
+    }
     if (-not $value) { return "" }
 
     # Windows may store protocol-specific proxies as

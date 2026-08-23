@@ -4,7 +4,7 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
-from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials
+from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials, _proxy_config_from_env
 
 router = APIRouter(prefix="/api/testnet", tags=["testnet"])
 
@@ -39,6 +39,7 @@ def testnet_status():
     return {
         "environment": "TESTNET",
         "credentials_configured": creds.configured,
+        "proxy_configured": bool(_proxy_config_from_env()),
         "order_routes_enabled": _orders_enabled(),
         "mainnet_orders_supported": False,
         "credential_source": "SERVER_ENV_ONLY",

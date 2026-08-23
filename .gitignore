@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+backend/.env
+
+# Local databases and runtime data
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.sqlite*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

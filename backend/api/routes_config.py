@@ -32,15 +32,36 @@ def _purge_legacy_binance_secrets(cfg: ConfigModel, db: Session) -> None:
         db.commit()
 
 
+def _enforce_s7_mode(cfg: ConfigModel, db: Session) -> None:
+    """Fail closed on all legacy Live-mode flags while the system is in S7."""
+
+    changed = False
+    if cfg.testnet is not True:
+        cfg.testnet = True
+        changed = True
+    if cfg.dry_run is not True:
+        cfg.dry_run = True
+        changed = True
+    if cfg.live_confirmed:
+        cfg.live_confirmed = False
+        changed = True
+    if changed:
+        db.commit()
+
+
 def _ensure_config(db: Session) -> ConfigModel:
     cfg = db.query(ConfigModel).first()
     if cfg:
         _purge_legacy_binance_secrets(cfg, db)
+        _enforce_s7_mode(cfg, db)
         return cfg
     d = DEFAULT_CONFIG.model_dump()
     cfg = ConfigModel(**{**d, "enabled_symbols": ",".join(d["enabled_symbols"])})
     cfg.binance_api_key = ""
     cfg.binance_secret = ""
+    cfg.testnet = True
+    cfg.dry_run = True
+    cfg.live_confirmed = False
     db.add(cfg)
     db.commit()
     db.refresh(cfg)
@@ -67,9 +88,10 @@ def get_config(db: Session = Depends(get_db)):
         "binance_secret": "",
         "binance_credentials_source": "SERVER_ENV_ONLY",
         "deepseek_api_key": mask_secret(cfg.deepseek_api_key),
-        "testnet": cfg.testnet,
-        "dry_run": cfg.dry_run,
-        "live_confirmed": cfg.live_confirmed,
+        "testnet": True,
+        "dry_run": True,
+        "live_confirmed": False,
+        "s7_mode_locked": True,
         "margin_mode": cfg.margin_mode,
         "default_leverage": min(cfg.default_leverage, HARD_MAX_LEVERAGE),
         "max_leverage": min(cfg.max_leverage, HARD_MAX_LEVERAGE),
@@ -101,13 +123,13 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
     )
 
     updates = {
-        # Binance credentials are deliberately ignored here and erased below.
+        # S7 security locks: browser/admin config cannot enable Mainnet semantics.
         "binance_api_key": "",
         "binance_secret": "",
+        "testnet": True,
+        "dry_run": True,
+        "live_confirmed": False,
         "deepseek_api_key": _secret_value(payload, "deepseek_api_key", cfg.deepseek_api_key),
-        "testnet": bool(payload.get("testnet", True)),
-        "dry_run": bool(payload.get("dry_run", True)),
-        "live_confirmed": bool(payload.get("live_confirmed", False)),
         "margin_mode": "isolated",
         "default_leverage": default_leverage,
         "max_leverage": max_leverage,
@@ -129,15 +151,14 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
         "enabled_symbols": ",".join(enabled_symbols or ["BTC/USDT"]),
     }
 
-    # Local Paper remains fail-closed when dry_run is disabled. Mainnet order
-    # execution is not supported by the S7 gateway regardless of this setting.
-    if not updates["testnet"] and not updates["dry_run"] and not updates["live_confirmed"]:
-        return {"ok": False, "error": "进入live模式前必须二次确认"}
-
     for key, value in updates.items():
         setattr(cfg, key, value)
     db.commit()
-    return {"ok": True, "binance_credentials_source": "SERVER_ENV_ONLY"}
+    return {
+        "ok": True,
+        "binance_credentials_source": "SERVER_ENV_ONLY",
+        "s7_mode_locked": True,
+    }
 
 
 @router.post("/test-binance")

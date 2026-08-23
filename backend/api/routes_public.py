@@ -3,14 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from config import REFERENCE_CAPITAL_USDT
 from models.database import get_db
 from models.position import Position
 from models.trade import Trade
-from services.account_service import latest_account
+from services.account_service import latest_account, realized_pnl_for_utc_day
 
 router = APIRouter(prefix="/api/public", tags=["public-read-only"])
 
@@ -57,6 +57,10 @@ def public_health():
 @router.get("/snapshot")
 def public_snapshot(db: Session = Depends(get_db)):
     account = latest_account(db)
+    # Derive the live daily value from today's closed-trade ledger so a stale
+    # AccountSnapshot cannot carry yesterday's PnL into a new UTC day.
+    account["daily_pnl"] = realized_pnl_for_utc_day(db)
+
     positions = (
         db.query(Position)
         .filter(Position.is_open.is_(True))
@@ -73,9 +77,23 @@ def public_snapshot(db: Session = Depends(get_db)):
         else 0.0
     )
 
-    closed = [row for row in trades if row.close_time is not None]
-    wins = sum(1 for row in closed if float(row.pnl or 0) > 0)
-    losses = sum(1 for row in closed if float(row.pnl or 0) < 0)
+    # Statistics are lifetime ledger statistics. They must not silently become
+    # "last 30 trades" statistics just because the display list is paginated.
+    closed_trades = int(
+        db.query(func.count(Trade.id)).filter(Trade.close_time.isnot(None)).scalar() or 0
+    )
+    wins = int(
+        db.query(func.count(Trade.id))
+        .filter(Trade.close_time.isnot(None), Trade.pnl > 0)
+        .scalar()
+        or 0
+    )
+    losses = int(
+        db.query(func.count(Trade.id))
+        .filter(Trade.close_time.isnot(None), Trade.pnl < 0)
+        .scalar()
+        or 0
+    )
 
     return {
         "read_only": True,
@@ -88,10 +106,10 @@ def public_snapshot(db: Session = Depends(get_db)):
         "positions": [_position(row) for row in positions],
         "recent_trades": [_trade(row) for row in trades],
         "statistics": {
-            "closed_trades": len(closed),
+            "closed_trades": closed_trades,
             "wins": wins,
             "losses": losses,
-            "win_rate_pct": (wins / len(closed) * 100.0) if closed else 0.0,
+            "win_rate_pct": (wins / closed_trades * 100.0) if closed_trades else 0.0,
         },
         "capabilities": {
             "can_read": True,

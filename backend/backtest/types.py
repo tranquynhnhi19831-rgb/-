@@ -85,6 +85,6 @@ class BacktestTrade:
 class BacktestResult:
     config: BacktestConfig
     trades: tuple[BacktestTrade, ...]
-    metrics: dict[str, float | int]
+    metrics: dict[str, Any]
     equity_curve: tuple[float, ...]
     skipped_signals: int

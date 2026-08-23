@@ -9,7 +9,7 @@ from config import (
     HARD_MAX_RISK_PER_TRADE,
     REFERENCE_CAPITAL_USDT,
 )
-from exchange.binance_client import BinanceClient
+from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials
 from models.config_model import ConfigModel
 from models.database import get_db
 from services.deepseek_service import DeepSeekService
@@ -18,12 +18,29 @@ from utils.security import mask_secret
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
+def _purge_legacy_binance_secrets(cfg: ConfigModel, db: Session) -> None:
+    """Remove legacy DB-persisted Binance credentials.
+
+    S7 private Binance Demo credentials are SERVER_ENV_ONLY. Keeping a second
+    credential copy in SQLite creates ambiguity and unnecessary secret-at-rest
+    exposure, so any historical values are erased when config is accessed.
+    """
+
+    if cfg.binance_api_key or cfg.binance_secret:
+        cfg.binance_api_key = ""
+        cfg.binance_secret = ""
+        db.commit()
+
+
 def _ensure_config(db: Session) -> ConfigModel:
     cfg = db.query(ConfigModel).first()
     if cfg:
+        _purge_legacy_binance_secrets(cfg, db)
         return cfg
     d = DEFAULT_CONFIG.model_dump()
     cfg = ConfigModel(**{**d, "enabled_symbols": ",".join(d["enabled_symbols"])})
+    cfg.binance_api_key = ""
+    cfg.binance_secret = ""
     db.add(cfg)
     db.commit()
     db.refresh(cfg)
@@ -45,8 +62,10 @@ def _secret_value(payload: dict, key: str, current: str) -> str:
 def get_config(db: Session = Depends(get_db)):
     cfg = _ensure_config(db)
     return {
-        "binance_api_key": mask_secret(cfg.binance_api_key),
-        "binance_secret": mask_secret(cfg.binance_secret),
+        # Binance credentials intentionally never come from this config model.
+        "binance_api_key": "",
+        "binance_secret": "",
+        "binance_credentials_source": "SERVER_ENV_ONLY",
         "deepseek_api_key": mask_secret(cfg.deepseek_api_key),
         "testnet": cfg.testnet,
         "dry_run": cfg.dry_run,
@@ -63,7 +82,7 @@ def get_config(db: Session = Depends(get_db)):
         "enabled_symbols": [s for s in cfg.enabled_symbols.split(",") if s],
         "allowed_symbols": ALLOWED_SYMBOLS,
         "reference_capital_usdt": REFERENCE_CAPITAL_USDT,
-        "execution_status": "S1_PUBLIC_DATA_AND_PREVIEW_ONLY",
+        "execution_status": "S7_LOCAL_PAPER_AND_BINANCE_DEMO_VALIDATION",
     }
 
 
@@ -82,8 +101,9 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
     )
 
     updates = {
-        "binance_api_key": _secret_value(payload, "binance_api_key", cfg.binance_api_key),
-        "binance_secret": _secret_value(payload, "binance_secret", cfg.binance_secret),
+        # Binance credentials are deliberately ignored here and erased below.
+        "binance_api_key": "",
+        "binance_secret": "",
         "deepseek_api_key": _secret_value(payload, "deepseek_api_key", cfg.deepseek_api_key),
         "testnet": bool(payload.get("testnet", True)),
         "dry_run": bool(payload.get("dry_run", True)),
@@ -109,42 +129,41 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
         "enabled_symbols": ",".join(enabled_symbols or ["BTC/USDT"]),
     }
 
-    # S1 does not contain a live Binance order path. Keep the explicit guard in
-    # place so a future execution adapter cannot be enabled accidentally.
+    # Local Paper remains fail-closed when dry_run is disabled. Mainnet order
+    # execution is not supported by the S7 gateway regardless of this setting.
     if not updates["testnet"] and not updates["dry_run"] and not updates["live_confirmed"]:
         return {"ok": False, "error": "进入live模式前必须二次确认"}
 
     for key, value in updates.items():
         setattr(cfg, key, value)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "binance_credentials_source": "SERVER_ENV_ONLY"}
 
 
 @router.post("/test-binance")
 def test_binance(payload: dict, db: Session = Depends(get_db)):
-    cfg = _ensure_config(db)
-    client = BinanceClient(
-        payload.get("api_key", cfg.binance_api_key),
-        payload.get("secret", cfg.binance_secret),
-        payload.get("testnet", cfg.testnet),
-    )
-    return client.test_connection()
+    """Compatibility route: use the env-only Binance Demo private health check."""
+    _ensure_config(db)
+    try:
+        result = BinanceTestnetGateway(TestnetCredentials.from_env()).authenticated_health()
+        return {"deprecated_route": True, **result}
+    except Exception as exc:
+        return {"ok": False, "deprecated_route": True, "error": str(exc)}
 
 
 @router.post("/binance-order-preview")
 def binance_order_preview(payload: dict, db: Session = Depends(get_db)):
-    """Preview a Binance-valid quantity; this endpoint never places an order."""
-    cfg = _ensure_config(db)
-    client = BinanceClient(cfg.binance_api_key, cfg.binance_secret, cfg.testnet)
-    symbol = payload.get("symbol", "BTC/USDT")
+    """Preview a Demo-valid quantity; this endpoint never places an order."""
+    _ensure_config(db)
+    symbol = payload.get("symbol", "ETH/USDT")
     if symbol not in ALLOWED_SYMBOLS:
         return {"ok": False, "error": "币种未启用或不在白名单"}
 
     try:
-        preview = client.preview_market_order(
+        gateway = BinanceTestnetGateway(TestnetCredentials.from_env())
+        preview = gateway._preview(
             symbol=symbol,
             target_notional_usdt=float(payload.get("target_notional_usdt", 10.0)),
-            price=float(payload["price"]) if payload.get("price") is not None else None,
         )
         return {"ok": True, **preview}
     except Exception as exc:

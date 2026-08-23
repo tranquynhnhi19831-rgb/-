@@ -5,11 +5,13 @@ from dataclasses import asdict
 import pandas as pd
 
 from backtest.binance_data import attach_funding_rates, fetch_usdm_funding_rates, fetch_usdm_ohlcv
+from backtest.binance_vision import fetch_usdm_ohlcv_vision
 from backtest.engine import BacktestEngine
 from backtest.jianghe_runner import ALL_SETUPS, JiangheRunnerConfig, generate_jianghe_signals
 from backtest.types import BacktestConfig
 
 MAX_API_RANGE_DAYS = 31
+DATA_SOURCES = {"rest", "vision"}
 
 
 def _timestamp(value: str) -> pd.Timestamp:
@@ -43,11 +45,16 @@ def run_backtest(
     reward_risk: float = 1.5,
     leverage: float = 3.0,
     max_margin_fraction: float = 0.10,
+    data_source: str = "rest",
 ) -> dict:
-    """Run a real deterministic Binance-history backtest.
+    """Run a deterministic Binance USD-M historical backtest.
 
-    This replaces the original random-number placeholder. Public market/funding
-    history is fetched from Binance USDT-M without private API credentials.
+    `data_source="rest"` uses Binance Futures public REST and includes funding
+    history. `data_source="vision"` uses Binance's official Data Vision kline
+    archives for CI/research environments where the production REST host is
+    unavailable by region. Funding is intentionally zero in Vision mode here;
+    funding arithmetic remains covered by unit tests and is exercised again in
+    the allowed-region runtime/Testnet environment.
     """
     start_ts = _timestamp(start)
     end_ts = _timestamp(end)
@@ -57,6 +64,8 @@ def run_backtest(
         raise ValueError(
             f"API backtests are capped at {MAX_API_RANGE_DAYS} days per request; split longer studies into walk-forward windows"
         )
+    if data_source not in DATA_SOURCES:
+        raise ValueError(f"unsupported data_source: {data_source}")
 
     runner_cfg = JiangheRunnerConfig(enabled_setups=tuple(enabled_setups))
     runner_cfg.validate()
@@ -66,25 +75,43 @@ def run_backtest(
     )
     warmup_start = start_ts - warmup
 
-    context = fetch_usdm_ohlcv(
-        symbol,
-        context_timeframe,
-        warmup_start.isoformat(),
-        end_ts.isoformat(),
-        max_bars=25_000,
-    )
-    execution = fetch_usdm_ohlcv(
-        symbol,
-        execution_timeframe,
-        warmup_start.isoformat(),
-        end_ts.isoformat(),
-        max_bars=100_000,
-    )
+    if data_source == "vision":
+        context = fetch_usdm_ohlcv_vision(
+            symbol,
+            context_timeframe,
+            warmup_start.isoformat(),
+            end_ts.isoformat(),
+        )
+        execution = fetch_usdm_ohlcv_vision(
+            symbol,
+            execution_timeframe,
+            warmup_start.isoformat(),
+            end_ts.isoformat(),
+        )
+        funding = pd.DataFrame(columns=["timestamp", "funding_rate"])
+        execution = attach_funding_rates(execution, funding)
+        funding_source = "NOT_EXERCISED_IN_CI_VISION_MODE"
+    else:
+        context = fetch_usdm_ohlcv(
+            symbol,
+            context_timeframe,
+            warmup_start.isoformat(),
+            end_ts.isoformat(),
+            max_bars=25_000,
+        )
+        execution = fetch_usdm_ohlcv(
+            symbol,
+            execution_timeframe,
+            warmup_start.isoformat(),
+            end_ts.isoformat(),
+            max_bars=100_000,
+        )
+        funding = fetch_usdm_funding_rates(symbol, start_ts.isoformat(), end_ts.isoformat())
+        execution = attach_funding_rates(execution, funding)
+        funding_source = "BINANCE_USDT_M_PUBLIC_REST"
+
     if context.empty or execution.empty:
         raise ValueError("Binance returned no historical candles for the requested range")
-
-    funding = fetch_usdm_funding_rates(symbol, start_ts.isoformat(), end_ts.isoformat())
-    execution = attach_funding_rates(execution, funding)
 
     signals = generate_jianghe_signals(context, execution, runner_cfg)
     signals = [
@@ -108,6 +135,8 @@ def run_backtest(
     return {
         "symbol": symbol,
         "market": "BINANCE_USDT_M",
+        "data_source": data_source,
+        "funding_source": funding_source,
         "start": start_ts.isoformat(),
         "end": end_ts.isoformat(),
         "context_timeframe": context_timeframe,

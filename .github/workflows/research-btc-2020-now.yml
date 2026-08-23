@@ -1,0 +1,26 @@
+name: research-btc-2020-now
+
+on:
+  push:
+    branches: ["codex/research-btc-2020-now"]
+  workflow_dispatch:
+
+jobs:
+  btc-year:
+    strategy:
+      fail-fast: false
+      matrix:
+        year: [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Run BTC Jianghe long-range research slice
+        env:
+          PYTHONPATH: backend
+        run: python scripts/research_btc_2020_now.py --year ${{ matrix.year }}

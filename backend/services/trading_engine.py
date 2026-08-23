@@ -12,7 +12,7 @@ from models.risk_event import RiskEvent
 from models.signal import Signal
 from models.trade import Trade
 from risk.risk_manager import RiskContext, RiskManager
-from services.account_service import latest_account
+from services.account_service import latest_account, realized_pnl_for_utc_day, trades_opened_on_utc_day
 from services.log_service import add_log
 from services.paper_scenarios import scenario_for_index
 
@@ -105,6 +105,11 @@ class TradingEngine:
             db.commit()
             return {"action": "RECONCILE_ORPHAN_POSITION", "symbol": position.symbol}
 
+        # Capture today's realized ledger PnL while this trade is still open.
+        # This prevents yesterday's snapshot.daily_pnl from leaking into a new
+        # UTC day and avoids double-counting the trade being closed below.
+        daily_pnl_before = realized_pnl_for_utc_day(db)
+
         # Alternate a target exit and a stop exit so the local dashboard can
         # exercise both winning and losing accounting paths deterministically.
         use_target = (trade.id % 2) == 1
@@ -127,7 +132,7 @@ class TradingEngine:
         previous = latest_account(db)
         balance = float(previous["balance"]) + net
         total_pnl = float(previous["total_pnl"]) + net
-        daily_pnl = float(previous["daily_pnl"]) + net
+        daily_pnl = daily_pnl_before + net
         peak_equity = self._historical_peak_equity(db)
         drawdown = self._drawdown_fraction(peak_equity, balance)
         db.add(
@@ -152,10 +157,13 @@ class TradingEngine:
             "symbol": position.symbol,
             "side": trade.side,
             "exit": exit_price,
+            "gross_pnl_usdt": gross,
+            "fee_usdt": fee,
             "net_pnl_usdt": net,
             "outcome": "TARGET" if use_target else "STOP",
             "equity_peak_usdt": peak_equity,
             "drawdown_fraction": drawdown,
+            "daily_pnl_usdt": daily_pnl,
         }
 
     async def start_once(self, db) -> dict:
@@ -176,9 +184,12 @@ class TradingEngine:
             return self._close_existing_paper_position(db, open_position)
 
         account = latest_account(db)
-        trades_today = db.query(Trade).filter(func.date(Trade.open_time) == datetime.utcnow().date()).count()
+        daily_pnl = realized_pnl_for_utc_day(db)
+        trades_today = trades_opened_on_utc_day(db)
         open_positions = db.query(Position).filter(Position.is_open.is_(True)).count()
         consecutive_losses = self._consecutive_losses(db)
+        equity = float(account["equity"])
+        day_start_equity = max(0.0, equity - daily_pnl)
 
         enabled = cfg_dict["enabled_symbols"] or ["BTC/USDT"]
         symbol = enabled[0]
@@ -203,13 +214,14 @@ class TradingEngine:
 
         leverage = int(cfg.default_leverage)
         ctx = RiskContext(
-            equity=float(account["equity"]),
-            daily_pnl=float(account["daily_pnl"]),
+            equity=equity,
+            daily_pnl=daily_pnl,
             trades_today=trades_today,
             open_positions=open_positions,
             consecutive_losses=consecutive_losses,
+            day_start_equity=day_start_equity,
         )
-        allowed, reason = self.risk.check(
+        decision = self.risk.evaluate(
             cfg_dict,
             ctx,
             symbol,
@@ -217,15 +229,22 @@ class TradingEngine:
             leverage=leverage,
             margin_ratio=min(0.05, float(cfg.max_margin_per_trade)),
         )
-        if not allowed:
-            db.add(RiskEvent(rule="paper_risk_check", symbol=symbol, action="blocked", reason=reason))
+        if not decision.allowed:
+            db.add(RiskEvent(rule="paper_risk_check", symbol=symbol, action="blocked", reason=decision.message))
             db.commit()
-            add_log(db, f"PAPER风控拦截 {symbol}: {reason}", "WARNING", "paper")
-            return {"action": "RISK_BLOCKED", "symbol": symbol, "reason": reason}
+            add_log(db, f"PAPER风控拦截 {symbol}: {decision.code} {decision.message}", "WARNING", "paper")
+            return {
+                "action": "RISK_BLOCKED",
+                "symbol": symbol,
+                "reason_code": decision.code,
+                "reason": decision.message,
+                "daily_pnl_usdt": daily_pnl,
+                "trades_today": trades_today,
+            }
 
-        risk_budget = self.risk.risk_budget_usdt(cfg_dict, float(account["equity"]))
+        risk_budget = self.risk.risk_budget_usdt(cfg_dict, equity)
         qty_by_stop = risk_budget / stop_distance
-        max_notional = float(account["equity"]) * float(cfg.max_margin_per_trade) * leverage
+        max_notional = equity * float(cfg.max_margin_per_trade) * leverage
         qty_by_notional = max_notional / max(entry, 1e-9)
         quantity = min(qty_by_stop, qty_by_notional)
         if quantity <= 0:
@@ -236,6 +255,8 @@ class TradingEngine:
         take = entry + direction * stop_distance * 1.8
         reason_codes = list(evaluation.reason_codes)
         reason_text = f"PAPER:{scenario.name}; " + ",".join(reason_codes)
+        actual_risk = stop_distance * quantity
+        actual_notional = abs(entry * quantity)
 
         db.add(
             Signal(
@@ -293,7 +314,12 @@ class TradingEngine:
             "take": take,
             "quantity": quantity,
             "risk_budget_usdt": risk_budget,
+            "actual_risk_usdt": actual_risk,
+            "actual_risk_pct_equity": (actual_risk / equity * 100.0) if equity > 0 else 0.0,
             "max_notional_usdt": max_notional,
+            "actual_notional_usdt": actual_notional,
+            "daily_pnl_usdt": daily_pnl,
+            "trades_today": trades_today,
             "reason_codes": reason_codes,
         }
 

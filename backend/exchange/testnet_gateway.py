@@ -10,6 +10,7 @@ import ccxt
 from exchange.binance_client import BinanceClient
 
 TESTNET_ENVIRONMENT = "TESTNET"
+BINANCE_USDM_DEMO_REST_BASE = "https://demo-fapi.binance.com"
 # 100U * 10% max margin * 3x leverage = 30U maximum position notional.
 MAX_TESTNET_ORDER_NOTIONAL_USDT = 30.0
 CLIENT_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,36}$")
@@ -33,11 +34,12 @@ class TestnetCredentials:
 
 
 class BinanceTestnetGateway:
-    """Private Binance USD-M gateway that is structurally incapable of Mainnet trading.
+    """Private Binance USD-M Demo/Testnet gateway with no Mainnet execution path.
 
-    S7 deliberately has no Mainnet base-url switch. The gateway always enables
-    CCXT sandbox mode before any market/private call. Real-money execution must
-    be introduced later through a separately reviewed adapter.
+    Binance's current USD-M testing environment is exposed as Demo Trading.
+    S7 deliberately has no Mainnet base-url switch. The gateway enables CCXT
+    Demo Trading before any market/private call and verifies any active fapi
+    REST URLs point at Binance's documented demo host.
     """
 
     environment = TESTNET_ENVIRONMENT
@@ -64,9 +66,44 @@ class BinanceTestnetGateway:
                 }
             )
         self.exchange = exchange
-        # Must happen before any exchange call. This is the primary S7 safety boundary.
-        self.exchange.set_sandbox_mode(True)
+        self._enable_demo_trading()
+        self._assert_demo_fapi_urls()
         self.market = BinanceClient(exchange=self.exchange)
+
+    def _enable_demo_trading(self) -> None:
+        # Binance deprecated the old Futures sandbox. Modern CCXT exposes the
+        # replacement environment through enable_demo_trading(True).
+        enable_demo = getattr(self.exchange, "enable_demo_trading", None)
+        if enable_demo is None:
+            raise RuntimeError(
+                "installed CCXT does not support Binance Demo Trading; CCXT >= 4.5.6 is required"
+            )
+        # Must happen before any exchange request.
+        enable_demo(True)
+
+    def _assert_demo_fapi_urls(self) -> None:
+        """Fail closed if CCXT leaves an active USD-M REST URL on Mainnet."""
+        urls = getattr(self.exchange, "urls", None)
+        if not isinstance(urls, dict):
+            return
+        api_urls = urls.get("api")
+        if not isinstance(api_urls, dict):
+            return
+
+        checked = 0
+        for key, value in api_urls.items():
+            if "fapi" not in str(key).lower() or not isinstance(value, str):
+                continue
+            checked += 1
+            if "demo-fapi.binance.com" not in value:
+                raise RuntimeError(
+                    f"unsafe Binance USD-M API route after enabling Demo Trading: {key}={value}"
+                )
+
+        # Current CCXT exposes fapi keys. If a future SDK hides them, network
+        # acceptance still verifies the host, but do not fail injected test doubles.
+        if checked == 0 and self.exchange.__class__.__module__.startswith("ccxt"):
+            raise RuntimeError("unable to verify Binance Demo Trading USD-M REST routes")
 
     @classmethod
     def from_env(cls) -> "BinanceTestnetGateway":
@@ -75,7 +112,7 @@ class BinanceTestnetGateway:
     def _require_credentials(self) -> None:
         if not self.credentials.configured:
             raise RuntimeError(
-                "Binance Testnet credentials are not configured; set BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_SECRET"
+                "Binance Testnet/Demo credentials are not configured; set BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_SECRET"
             )
 
     @staticmethod
@@ -120,20 +157,23 @@ class BinanceTestnetGateway:
         """Local status only; does not make a network call."""
         return {
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
+            "official_rest_base": BINANCE_USDM_DEMO_REST_BASE,
             "credentials_configured": self.credentials.configured,
-            "sandbox_required": True,
+            "demo_trading_required": True,
             "mainnet_orders_supported": False,
             "max_order_notional_usdt": self.max_order_notional_usdt,
         }
 
     def authenticated_health(self) -> dict:
-        """Verify Testnet credentials with a read-only private account request."""
+        """Verify Demo/Testnet credentials with a read-only private account request."""
         self._require_credentials()
         balance = self.exchange.fetch_balance()
         usdt = balance.get("USDT", {}) if isinstance(balance, dict) else {}
         return {
             "ok": True,
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
             "usdt_free": float(usdt.get("free") or 0.0),
             "usdt_total": float(usdt.get("total") or 0.0),
         }
@@ -164,6 +204,7 @@ class BinanceTestnetGateway:
 
         return {
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
             "usdt_free": float(usdt.get("free") or 0.0),
             "usdt_total": float(usdt.get("total") or 0.0),
             "positions": active_positions,
@@ -205,6 +246,7 @@ class BinanceTestnetGateway:
         return {
             "ok": True,
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
             "creates_order": False,
             "client_order_id": client_id,
             "preview": preview,
@@ -220,7 +262,7 @@ class BinanceTestnetGateway:
         client_order_id: str,
         confirm: str | None,
     ) -> dict:
-        """Place a virtual-money MARKET order on USD-M Futures Testnet only."""
+        """Place a virtual-money MARKET order on Binance USD-M Demo/Testnet only."""
         self._require_credentials()
         self._confirm(confirm, "PLACE_TESTNET_ORDER")
         side_value = self._validate_side(side)
@@ -238,6 +280,7 @@ class BinanceTestnetGateway:
         return {
             "ok": True,
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
             "virtual_money_only": True,
             "order": self._safe_order(order),
         }
@@ -261,7 +304,7 @@ class BinanceTestnetGateway:
         confirm: str | None,
         client_order_id: str,
     ) -> dict:
-        """Close one one-way-mode Testnet position with a reduce-only MARKET order."""
+        """Close one one-way-mode Demo/Testnet position with a reduce-only MARKET order."""
         self._require_credentials()
         self._confirm(confirm, "CLOSE_TESTNET_POSITION")
         client_id = self._validate_client_order_id(client_order_id)
@@ -289,6 +332,7 @@ class BinanceTestnetGateway:
         return {
             "ok": True,
             "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
             "virtual_money_only": True,
             "reduce_only": True,
             "order": self._safe_order(order),

@@ -1,6 +1,16 @@
-import pytest
+from datetime import date, datetime, timezone
 
-from services.account_service import max_drawdown_from_equities
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from models.database import Base
+from models.trade import Trade
+from services.account_service import (
+    max_drawdown_from_equities,
+    realized_pnl_for_utc_day,
+    trades_opened_on_utc_day,
+)
 from services.trading_engine import TradingEngine
 
 
@@ -36,3 +46,45 @@ def test_drawdown_is_zero_at_new_equity_high():
 
 def test_drawdown_handles_nonpositive_peak_defensively():
     assert TradingEngine._drawdown_fraction(0.0, 99.0) == 0.0
+
+
+def test_daily_pnl_and_trade_count_reset_by_utc_day():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+
+    try:
+        db.add_all(
+            [
+                Trade(
+                    symbol="BTC/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 23, 10, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 23, 11, 0, tzinfo=timezone.utc),
+                    pnl=-1.25,
+                ),
+                Trade(
+                    symbol="BTC/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc),
+                    pnl=0.50,
+                ),
+                Trade(
+                    symbol="BTC/USDT",
+                    side="SHORT",
+                    open_time=datetime(2026, 8, 24, 3, 0, tzinfo=timezone.utc),
+                    close_time=None,
+                    pnl=0.0,
+                ),
+            ]
+        )
+        db.commit()
+
+        assert realized_pnl_for_utc_day(db, date(2026, 8, 23)) == pytest.approx(-1.25)
+        assert realized_pnl_for_utc_day(db, date(2026, 8, 24)) == pytest.approx(0.50)
+        assert trades_opened_on_utc_day(db, date(2026, 8, 23)) == 1
+        assert trades_opened_on_utc_day(db, date(2026, 8, 24)) == 2
+    finally:
+        db.close()

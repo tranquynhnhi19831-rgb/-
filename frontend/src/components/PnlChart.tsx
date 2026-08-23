@@ -3,7 +3,7 @@ import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip } from 'rec
 export default function PnlChart({ data }: { data: any[] }) {
   return (
     <div className="card h-64">
-      <div className="mb-2">收益曲线</div>
+      <div className="mb-2">累计已实现 PnL 曲线（U）</div>
       <ResponsiveContainer width="100%" height="90%">
         <LineChart data={data}>
           <XAxis dataKey="x" hide />

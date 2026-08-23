@@ -100,6 +100,7 @@ def test_gateway_enables_sandbox_before_any_market_call():
     assert fake.events == [("sandbox", True)]
     assert gw.status()["environment"] == "TESTNET"
     assert gw.status()["mainnet_orders_supported"] is False
+    assert gw.status()["max_order_notional_usdt"] == 30.0
 
 
 def test_private_calls_require_server_side_testnet_credentials():
@@ -140,7 +141,7 @@ def test_actual_virtual_market_order_has_hard_notional_cap_and_confirmation():
         gw.place_market_order(
             symbol="BTC/USDT",
             side="BUY",
-            target_notional_usdt=10.01,
+            target_notional_usdt=30.01,
             client_order_id="jh_big",
             confirm="PLACE_TESTNET_ORDER",
         )
@@ -165,6 +166,30 @@ def test_actual_virtual_market_order_has_hard_notional_cap_and_confirmation():
     assert result["virtual_money_only"] is True
     assert result["order"]["client_order_id"] == "jh_open_1"
     assert fake.created_orders[0][1]["newClientOrderId"] == "jh_open_1"
+
+
+def test_exchange_minimum_cannot_round_position_above_100u_profile_cap():
+    fake = FakeExchange()
+    market = fake.markets["BTC/USDT:USDT"]
+    market["info"]["filters"][0] = {
+        "filterType": "MARKET_LOT_SIZE",
+        "minQty": "0.500",
+        "maxQty": "100",
+        "stepSize": "0.500",
+    }
+    market["limits"]["amount"]["min"] = 0.5
+    gw, _ = gateway(fake)
+
+    with pytest.raises(ValueError, match="minimum quantity/notional"):
+        gw.place_market_order(
+            symbol="BTC/USDT",
+            side="BUY",
+            target_notional_usdt=5,
+            client_order_id="jh_filter_cap",
+            confirm="PLACE_TESTNET_ORDER",
+        )
+
+    assert fake.created_orders == []
 
 
 def test_invalid_side_and_client_order_id_are_rejected_before_order_creation():

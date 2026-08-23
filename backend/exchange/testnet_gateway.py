@@ -16,6 +16,27 @@ MAX_TESTNET_ORDER_NOTIONAL_USDT = 30.0
 CLIENT_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,36}$")
 
 
+def _proxy_config_from_env() -> dict[str, str]:
+    """Build explicit CCXT requests proxies from standard environment variables.
+
+    CCXT does not rely on requests' environment proxy discovery by default, so
+    the private Demo gateway must pass proxies explicitly when the runtime has
+    HTTP_PROXY/HTTPS_PROXY configured. This keeps local Binance Demo access on
+    the same approved network path already used by the host environment.
+    """
+
+    http_proxy = (os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or "").strip()
+    https_proxy = (os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or "").strip()
+
+    if not http_proxy and not https_proxy:
+        return {}
+    if not http_proxy:
+        http_proxy = https_proxy
+    if not https_proxy:
+        https_proxy = http_proxy
+    return {"http": http_proxy, "https": https_proxy}
+
+
 @dataclass(frozen=True)
 class TestnetCredentials:
     api_key: str
@@ -57,14 +78,16 @@ class BinanceTestnetGateway:
         self.max_order_notional_usdt = float(max_order_notional_usdt)
 
         if exchange is None:
-            exchange = ccxt.binanceusdm(
-                {
-                    "apiKey": credentials.api_key,
-                    "secret": credentials.secret,
-                    "enableRateLimit": True,
-                    "options": {"defaultType": "future"},
-                }
-            )
+            exchange_config: dict[str, Any] = {
+                "apiKey": credentials.api_key,
+                "secret": credentials.secret,
+                "enableRateLimit": True,
+                "options": {"defaultType": "future"},
+            }
+            proxies = _proxy_config_from_env()
+            if proxies:
+                exchange_config["proxies"] = proxies
+            exchange = ccxt.binanceusdm(exchange_config)
         self.exchange = exchange
         self._enable_demo_trading()
         self._assert_demo_fapi_urls()
@@ -163,6 +186,7 @@ class BinanceTestnetGateway:
             "demo_trading_required": True,
             "mainnet_orders_supported": False,
             "max_order_notional_usdt": self.max_order_notional_usdt,
+            "proxy_configured": bool(_proxy_config_from_env()),
         }
 
     def authenticated_health(self) -> dict:

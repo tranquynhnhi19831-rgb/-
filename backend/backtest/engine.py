@@ -25,16 +25,8 @@ def _apply_slippage(price: float, side: str, is_entry: bool, bps: float) -> floa
     return price * (1.0 - rate if is_entry else 1.0 + rate)
 
 
-def _funding_cost(
-    bars: pd.DataFrame,
-    side: str,
-    notional: float,
-) -> float:
-    """Return signed funding cost; positive means cost, negative means credit.
-
-    Optional `funding_rate` rows should be zero except on funding timestamps.
-    Positive rates mean longs pay shorts, matching Binance futures convention.
-    """
+def _funding_cost(bars: pd.DataFrame, side: str, notional: float) -> float:
+    """Return signed funding cost; positive means cost, negative means credit."""
     if "funding_rate" not in bars.columns:
         return 0.0
     rates = bars["funding_rate"].fillna(0.0).astype(float)
@@ -51,6 +43,7 @@ class BacktestEngine:
     - risk sizing uses structural invalidation;
     - margin/notional is capped for the 100U profile;
     - same-bar stop/target ambiguity defaults to STOP_FIRST;
+    - adverse gaps through a stop fill at the bar open, not the ideal stop price;
     - fees, adverse slippage and optional funding are deducted.
     """
 
@@ -58,11 +51,7 @@ class BacktestEngine:
         self.config = config or BacktestConfig()
         self.config.validate()
 
-    def run(
-        self,
-        bars: pd.DataFrame,
-        signals: Iterable[CandidateSignal],
-    ) -> BacktestResult:
+    def run(self, bars: pd.DataFrame, signals: Iterable[CandidateSignal]) -> BacktestResult:
         _validate_ohlc(bars)
         df = bars.reset_index(drop=True).copy()
         cfg = self.config
@@ -86,10 +75,7 @@ class BacktestEngine:
             raw_entry = float(df.loc[entry_index, "open"])
             entry = _apply_slippage(raw_entry, signal.side, True, cfg.slippage_bps)
             stop = float(signal.invalidation_reference)
-            if signal.side == "LONG":
-                stop_distance = entry - stop
-            else:
-                stop_distance = stop - entry
+            stop_distance = entry - stop if signal.side == "LONG" else stop - entry
             if stop_distance <= 0:
                 skipped += 1
                 continue
@@ -103,10 +89,11 @@ class BacktestEngine:
                 skipped += 1
                 continue
 
-            if signal.side == "LONG":
-                target = entry + cfg.reward_risk * stop_distance
-            else:
-                target = entry - cfg.reward_risk * stop_distance
+            target = (
+                entry + cfg.reward_risk * stop_distance
+                if signal.side == "LONG"
+                else entry - cfg.reward_risk * stop_distance
+            )
 
             max_exit_index = min(len(df) - 1, entry_index + cfg.max_hold_bars - 1)
             exit_index = max_exit_index
@@ -114,8 +101,23 @@ class BacktestEngine:
             raw_exit = float(df.loc[max_exit_index, "close"])
 
             for i in range(entry_index, max_exit_index + 1):
+                open_i = float(df.loc[i, "open"])
                 high = float(df.loc[i, "high"])
                 low = float(df.loc[i, "low"])
+
+                # Market-stop realism: if price opens beyond the stop, the stop
+                # cannot fill at a better historical price than the opening gap.
+                if signal.side == "LONG" and open_i <= stop:
+                    raw_exit = open_i
+                    exit_reason = "STOP_GAP"
+                    exit_index = i
+                    break
+                if signal.side == "SHORT" and open_i >= stop:
+                    raw_exit = open_i
+                    exit_reason = "STOP_GAP"
+                    exit_index = i
+                    break
+
                 if signal.side == "LONG":
                     hit_stop = low <= stop
                     hit_target = high >= target
@@ -190,7 +192,7 @@ class BacktestEngine:
         metrics = summarize(trades, equity_curve, cfg.initial_equity)
         metrics["skipped_signals"] = skipped
         metrics["setup_count"] = len({t.setup for t in trades})
-        metrics["by_setup"] = summarize_by_setup(trades)  # type: ignore[assignment]
+        metrics["by_setup"] = summarize_by_setup(trades)
 
         return BacktestResult(
             config=cfg,

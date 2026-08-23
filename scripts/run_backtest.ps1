@@ -1,2 +1,21 @@
-Write-Host "调用后端回测接口..." -ForegroundColor Cyan
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/backtest/run -ContentType 'application/json' -Body '{"symbol":"BTC/USDT","start":"2025-01-01","end":"2025-12-31"}'
+[CmdletBinding()]
+param(
+    [string]$BaseUrl = "http://127.0.0.1:8000",
+    [string]$Symbol = "BTC/USDT",
+    [string]$Start = "2025-01-01",
+    [string]$End = "2025-12-31"
+)
+
+$ErrorActionPreference = "Stop"
+$body = @{
+    symbol = $Symbol
+    start = $Start
+    end = $End
+} | ConvertTo-Json -Compress
+
+Write-Host "Calling backtest API: $BaseUrl/api/backtest/run" -ForegroundColor Cyan
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "$BaseUrl/api/backtest/run" `
+    -ContentType "application/json" `
+    -Body $body

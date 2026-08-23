@@ -4,7 +4,8 @@ on:
   push:
     branches: [main, "codex/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "codex/**"]
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -38,3 +39,32 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  s6-acceptance:
+    needs: backend
+    if: contains(github.ref, 'jianghe-s6-5-acceptance') || contains(github.head_ref, 'jianghe-s6-5-acceptance')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Run Binance public-history acceptance
+        env:
+          PYTHONPATH: backend
+        run: |
+          mkdir -p artifacts
+          python scripts/s6_acceptance.py \
+            --symbol BTC/USDT \
+            --start 2026-08-01 \
+            --end 2026-08-03 \
+            --output artifacts/s6_acceptance.json
+      - name: Upload S6 acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s6-acceptance-report
+          path: artifacts/s6_acceptance.json
+          if-no-files-found: error

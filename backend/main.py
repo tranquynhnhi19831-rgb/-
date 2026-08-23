@@ -5,6 +5,7 @@ from api.routes_config import router as config_router
 from api.routes_trading import router as trading_router
 from api.routes_dashboard import router as dashboard_router
 from api.routes_backtest import router as backtest_router
+from api.routes_testnet import router as testnet_router
 from api.websocket import router as ws_router
 
 init_db()
@@ -16,6 +17,7 @@ app.include_router(config_router)
 app.include_router(trading_router)
 app.include_router(dashboard_router)
 app.include_router(backtest_router)
+app.include_router(testnet_router)
 app.include_router(ws_router)
 
 

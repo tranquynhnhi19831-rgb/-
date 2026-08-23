@@ -1,6 +1,6 @@
-# Jianghe Feature Engine (S2)
+# Jianghe Feature & Setup Engine (S2-S3)
 
-本目录不是“江河本人公式”的复刻，而是把其公开视频中反复出现的**市场结构 / 强弱 / 动能转换**语言翻译成可回测特征。
+本目录不是“江河本人公式”的复刻，而是把其公开视频中反复出现的**市场结构 / 强弱 / 动能转换 / 顺势回调**语言翻译成可回测特征和候选 Setup。
 
 ## 证据边界
 
@@ -9,7 +9,7 @@
   `D_EXPERIMENTAL_QUANT_TRANSLATION`。
 - 后续必须通过 walk-forward、手续费/滑点后收益、消融测试判断这些数学翻译是否有效。
 
-## Structure Engine
+## S2 — Structure Engine
 
 `structure.py`
 
@@ -36,7 +36,7 @@ LH + LL -> BEAR_TREND
 
 `trend_efficiency` 单独返回，不混入 Regime 判定，方便后续消融测试。
 
-## Strength Engine
+## S2 — Strength Engine
 
 `strength.py`
 
@@ -67,16 +67,81 @@ LH + LL -> BEAR_TREND
 
 **不能把 composite score 当作直接买卖信号。**
 
-## S3 以后如何使用
+## S3 — Trend Pullback Continuation
 
-策略 Setup 应该组合：
+`pullback.py`
+
+顺势回调第一次把“势 / 位 / 态 / 动”组合成完整候选 Setup，但仍然**不下单**。
+
+### 四个 Gate
 
 ```text
-Context / 势
-+ Level / 位
-+ State / 态
-+ Strength Transition / 动
-= Setup candidate
+1. CONTEXT / 势
+   大周期必须已经形成确认后的 BULL_TREND 或 BEAR_TREND
+
+2. LEVEL / 位
+   回调必须进入最近结构 Higher Low / Lower High 附近
+   同时不能有效破坏该结构位
+
+3. STATE / 态
+   前面必须存在顺趋势 impulse
+   当前必须是反向 pullback
+   pullback 强度要弱于前一段 impulse
+   回调深度必须在实验区间内
+
+4. TRIGGER / 动
+   原趋势方向重新增强
+   trigger 强度满足绝对与相对门槛
+   收盘重新夺回最后一根 pullback bar 的微结构
 ```
 
-例如顺势回调的候选逻辑应先确认大周期上涨结构，再等待回调方向动能衰减与原趋势方向重新增强；不能因为 `strength_score > X` 单独开仓。
+全部通过后才会返回：
+
+```text
+candidate = true
+setup = TREND_PULLBACK_CONTINUATION
+side = LONG / SHORT
+```
+
+### 输出不是订单
+
+S3 返回：
+
+- `candidate`
+- `side`
+- `level_price`
+- `level_distance_atr`
+- `pullback_depth_atr`
+- `impulse_strength`
+- `pullback_strength`
+- `trigger_strength`
+- `invalidation_reference`
+- `gates`
+- `reason_codes`
+- `failed_gates`
+
+`entry_reference` 与 `invalidation_reference` 都只是研究/展示参考，不是 Binance Order。
+
+### 第一版实验参数
+
+默认值包括：
+
+```text
+impulse_bars                   = 8
+pullback_bars                  = 5
+trigger_bars                   = 3
+level_tolerance_atr            = 0.75
+invalidation_buffer_atr        = 0.20
+min_pullback_depth_atr         = 0.30
+max_pullback_depth_atr         = 4.00
+min_impulse_strength           = 0.50
+max_pullback_to_impulse_ratio  = 0.85
+min_trigger_strength           = 0.45
+min_trigger_to_pullback_ratio  = 0.75
+```
+
+这些数字全部是 D 级待检验参数。后续回测必须做参数稳定性、walk-forward 与 ablation；禁止只选择历史收益最高的一组。
+
+## 下一阶段
+
+S4 将独立实现 `Breakout Continuation`，不与 S3 共用最终入场阈值。S5 再实现 `Second-Push Failure`。等三类 Setup 都独立可测后，才进入统一回测和交易成本建模。

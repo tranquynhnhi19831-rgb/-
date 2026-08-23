@@ -4,6 +4,12 @@ The package keeps raw features separate from trading decisions so every
 experimental threshold can be backtested and audited.
 """
 
+from strategy.jianghe.breakout import (
+    BreakoutConfig,
+    BreakoutEvaluation,
+    evaluate_breakout_continuation,
+    evaluate_breakout_continuation_from_structure,
+)
 from strategy.jianghe.pullback import (
     PullbackConfig,
     PullbackEvaluation,
@@ -15,6 +21,8 @@ from strategy.jianghe.strength import calculate_directional_strength, compare_st
 from strategy.jianghe.types import MarketRegime, StrengthSnapshot, StructureSnapshot
 
 __all__ = [
+    "BreakoutConfig",
+    "BreakoutEvaluation",
     "MarketRegime",
     "PullbackConfig",
     "PullbackEvaluation",
@@ -23,6 +31,8 @@ __all__ = [
     "calculate_directional_strength",
     "classify_structure",
     "compare_strength",
+    "evaluate_breakout_continuation",
+    "evaluate_breakout_continuation_from_structure",
     "evaluate_trend_pullback",
     "evaluate_trend_pullback_from_structure",
     "find_confirmed_swings",

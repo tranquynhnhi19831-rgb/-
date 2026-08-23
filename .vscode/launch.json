@@ -2,12 +2,23 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug FastAPI Backend",
+      "name": "Debug Admin/Trading API",
       "type": "python",
       "request": "launch",
       "module": "uvicorn",
-      "args": ["backend.main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"],
+      "args": ["main:app", "--app-dir", "backend", "--reload", "--host", "127.0.0.1", "--port", "8000"],
       "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/backend"},
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug Read-Only Public API",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["public_main:app", "--app-dir", "backend", "--reload", "--host", "127.0.0.1", "--port", "8001"],
+      "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/backend"},
       "console": "integratedTerminal"
     }
   ]

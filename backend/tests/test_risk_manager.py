@@ -1,0 +1,72 @@
+from risk.risk_manager import RiskContext, RiskManager
+
+
+BASE_CFG = {
+    "margin_mode": "isolated",
+    "max_leverage": 3,
+    "risk_per_trade": 0.005,
+    "max_margin_per_trade": 0.10,
+    "max_daily_loss": 0.02,
+    "max_trades_per_day": 3,
+    "max_open_positions": 1,
+    "max_consecutive_losses": 3,
+    "enabled_symbols": ["BTC/USDT"],
+}
+
+
+def context(**overrides):
+    data = {
+        "equity": 100.0,
+        "daily_pnl": 0.0,
+        "trades_today": 0,
+        "open_positions": 0,
+        "consecutive_losses": 0,
+    }
+    data.update(overrides)
+    return RiskContext(**data)
+
+
+def test_100u_baseline_risk_budget_is_half_usdt():
+    manager = RiskManager()
+    assert manager.risk_budget_usdt(BASE_CFG, 100.0) == 0.5
+
+
+def test_blocks_at_two_percent_daily_loss():
+    manager = RiskManager()
+    allowed, reason = manager.check(
+        BASE_CFG,
+        context(daily_pnl=-2.0),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert not allowed
+    assert "每日最大亏损" in reason
+
+
+def test_blocks_leverage_above_configured_limit():
+    manager = RiskManager()
+    allowed, _ = manager.check(
+        BASE_CFG,
+        context(),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=4,
+        margin_ratio=0.05,
+    )
+    assert not allowed
+
+
+def test_allows_valid_small_account_trade_context():
+    manager = RiskManager()
+    allowed, reason = manager.check(
+        BASE_CFG,
+        context(),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert allowed
+    assert reason == "ok"

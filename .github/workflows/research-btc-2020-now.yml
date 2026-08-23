@@ -3,6 +3,8 @@ name: research-btc-2020-now
 on:
   push:
     branches: ["codex/research-btc-2020-now"]
+  pull_request:
+    branches: ["codex/jianghe-s7-paper-engine"]
   workflow_dispatch:
 
 jobs:
@@ -20,6 +22,18 @@ jobs:
           python-version: "3.12"
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
+      - name: Patch temporary month iterator
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/research_btc_2020_now.py')
+          text = path.read_text()
+          text = text.replace(
+              '        cur = (cur + pd.offsets.MonthBegin(1)).to_pydatetime()\n        cur = pd.Timestamp(cur, tz="UTC")',
+              '        cur = cur + pd.offsets.MonthBegin(1)',
+          )
+          path.write_text(text)
+          PY
       - name: Run BTC Jianghe long-range research slice
         env:
           PYTHONPATH: backend

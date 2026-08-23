@@ -1,28 +1,16 @@
-# Jianghe Feature & Setup Engine (S2-S4)
+# Jianghe Feature & Setup Engine (S2-S5)
 
-本目录不是“江河本人公式”的复刻，而是把其公开视频中反复出现的**市场结构 / 强弱 / 动能转换 / 顺势回调 / 突破延续**语言翻译成可回测特征和候选 Setup。
+本目录不是“江河本人公式”的复刻，而是把其公开视频中反复出现的**市场结构 / 强弱 / 动能转换 / 顺势回调 / 突破延续 / 二推失败**语言翻译成可回测特征和候选 Setup。
 
 ## 证据边界
 
 - `A/B`：来自公开内容中直接表述或反复体现的概念，例如趋势/震荡、强弱转换、突破、回调、二推失败。
-- 本目录的具体数学公式、窗口、权重和阈值统一标记为：`D_EXPERIMENTAL_QUANT_TRANSLATION`。
-- 后续必须通过 walk-forward、手续费/滑点/funding 后收益、参数稳定性和消融测试判断这些数学翻译是否有效。
+- 本目录的具体公式、窗口、权重和阈值统一标记为 `D_EXPERIMENTAL_QUANT_TRANSLATION`。
+- 后续必须通过手续费、滑点、funding、walk-forward、参数稳定性与消融测试判断这些数学翻译是否真的有信息增益。
 
-## S2 — Structure Engine
+## S2 — Structure / Strength Engine
 
-`structure.py`
-
-### Confirmed Swings
-
-局部高/低点使用左右窗口确认。假设 pivot 在 `i`，右侧确认窗口为 `right`：
-
-```text
-confirmed_at = i + right
-```
-
-回测只能在 `confirmed_at` 之后使用该 swing，防止 look-ahead bias。
-
-### Regime
+`structure.py` 使用已确认 swing high / low 分类：
 
 ```text
 HH + HL -> BULL_TREND
@@ -31,183 +19,178 @@ LH + LL -> BEAR_TREND
 不足两组  -> UNKNOWN
 ```
 
-`trend_efficiency` 单独返回，不混入 Regime 判定，方便后续消融测试。
-
-## S2 — Strength Engine
-
-`strength.py`
-
-显式输出：
-
-1. `displacement_atr`：窗口净位移 / ATR；
-2. `speed_atr_per_bar`：ATR 标准化位移 / bar 数；
-3. `body_efficiency`：实体总长度 / K 线总振幅；
-4. `directional_consistency`：与净方向一致的 K 线比例；
-5. `close_location`：收盘是否靠近推进方向一侧；
-6. `overlap_ratio`：相邻 K 线区间重叠程度；
-7. `trend_efficiency`：净位移 / 实际路径长度。
-
-### Composite Score v0
+pivot 只有在右侧窗口出现后才确认：
 
 ```text
-0.25 * displacement
-0.20 * speed
-0.15 * body efficiency
-0.15 * directional consistency
-0.15 * close location
-0.10 * (1 - overlap)
+confirmed_at = pivot_index + right
 ```
 
-所有归一化尺度、权重和 `compare_strength` 的门槛都是 D 级实验参数。
+回测只能在 `confirmed_at` 之后使用，防止 look-ahead bias。
 
-**Composite score 不能单独作为买卖信号。**
+`strength.py` 显式输出：
+
+```text
+displacement_atr
+speed_atr_per_bar
+body_efficiency
+directional_consistency
+close_location
+overlap_ratio
+trend_efficiency
+composite_score
+```
+
+Composite score 只是实验排序特征，不能单独作为买卖信号。
 
 ## S3 — Trend Pullback Continuation
 
 `pullback.py`
 
-顺势回调把“势 / 位 / 态 / 动”组合成完整候选 Setup，但仍然**不下单**。
-
-### 四个 Gate
-
 ```text
-CONTEXT / 势
-大周期必须是确认后的 BULL_TREND 或 BEAR_TREND
-
-LEVEL / 位
-回调进入最近 Higher Low / Lower High 附近
-且不能有效破坏该结构位
-
-STATE / 态
-前面存在顺趋势 impulse
-当前为反向 pullback
-pullback 弱于 impulse
-回调深度处于实验区间
-
-TRIGGER / 动
-原趋势方向重新增强
-并重新夺回最后一根 pullback bar 的微结构
+CONTEXT  大周期趋势确认
+LEVEL    回调进入 Higher Low / Lower High 附近且结构未失效
+STATE    顺势 impulse 后出现更弱的反向 pullback
+TRIGGER  原趋势重新增强并夺回微结构
 ```
 
-全部通过：
+四个 Gate 全部通过后才返回：
 
 ```text
 candidate = true
 setup = TREND_PULLBACK_CONTINUATION
-side = LONG / SHORT
 ```
-
-`entry_reference` 与 `invalidation_reference` 都只是研究/展示参考，不是 Binance Order。
 
 ## S4 — Breakout Continuation
 
 `breakout.py`
 
-S4 把江河公开视频里“关键位反复测试 / 压缩 / 一方增强 / 有效突破 / 突破后接受”的思路翻译成四个独立 Gate。核心目标不是识别“价格曾经穿过关键位”，而是区分**真突破延续**和**假突破回落**。
+```text
+CONTEXT  大周期趋势与突破方向一致
+PRESSURE 关键位反复测试、靠近、默认要求压缩
+BREAKOUT 收盘有效突破，K 线与窗口动能质量达标
+HOLD     突破后维持在关键位外并出现 follow-through
+```
+
+第一版会拒绝：影线刺穿但未收盘突破、测试不足、无压缩、突破质量差、突破后重新进入关键位、没有延续等情形。
+
+## S5 — Second-Push Failure
+
+`second_push.py`
+
+S5 把“二推不破”拆成**弱点识别**和**反转候选**两个阶段，避免把“第二推变弱”直接等同于反向开仓。
 
 ### 四个 Gate
 
 ```text
-1. CONTEXT / 势
-   大周期必须是确认后的趋势
-   BULL_TREND 只研究向上突破最近结构阻力
-   BEAR_TREND 只研究向下突破最近结构支撑
+1. CONTEXT / 关键环境
+   高周期必须存在可使用的结构位。
+   第一版允许 RANGE 边界，因为二推失败常发生在区间阻力/支撑；
+   UNKNOWN 上下文直接拒绝。
 
-2. PRESSURE / 位 + 态
-   突破前价格要向关键位靠近
-   在 ATR 容差内至少测试关键位若干次
-   突破窗口之前不能已经有效收盘越过关键位
-   默认要求后半段 K 线 True Range 小于前半段，形成压缩
+2. LOCATION / 同一战场
+   Push #1 与 Push #2 必须朝同一方向推进；
+   两次都要测试同一个结构阻力/支撑；
+   中间必须有方向相反或中性的 reset，并产生足够分离。
 
-3. BREAKOUT / 动
-   必须有收盘价有效越过关键位，而不是只靠影线刺穿
-   突破距离以 ATR 标准化
-   突破 K 实体效率和方向性收盘位置必须达标
-   突破窗口方向强度必须与大趋势一致
+3. FAILURE / 投入-结果恶化
+   Push #1 必须具备最低质量；
+   Push #2 的 composite strength 更弱；
+   Push #2 的 ATR 位移更弱；
+   Push #2 的推进速度更弱；
+   第二推不能相对第一推取得过大的新高/新低扩展；
+   关键位外侧不能形成持续收盘接受。
 
-4. HOLD / 共识确认
-   突破后的 follow-through K 线必须大部分/全部维持在关键位外侧
-   最终价格必须继续保留正向 extension
-   follow-through 方向与强度必须与突破方向一致
-   如果重新收回关键位内侧超过容差，则标记 FAILED_BREAKOUT_REENTRY
+4. TRIGGER / 反向接管
+   反方向动能必须真正出现；
+   Trigger 强度满足绝对门槛和相对门槛；
+   默认要求最终收盘破坏 Push #2 的微结构。
 ```
 
-全部通过：
+### 两级状态
 
 ```text
-candidate = true
-setup = BREAKOUT_CONTINUATION
-side = LONG / SHORT
+CONTEXT + LOCATION + FAILURE 通过
+TRIGGER 未通过
+    -> signal_state = SECOND_PUSH_WEAKNESS
+    -> weakness_detected = true
+    -> candidate = false
+
+四个 Gate 全部通过
+    -> signal_state = REVERSAL_CANDIDATE
+    -> candidate = true
 ```
+
+这条边界很重要：**观察到多头/空头衰竭，不代表另一方已经获得控制权。**
 
 ### 主要输出
 
-S4 返回：
-
-- `test_count`：关键位测试次数；
-- `compression_ratio`：突破前后半段 True Range 比；
-- `approach_distance_atr`：突破前最后收盘距离关键位多少 ATR；
-- `breakout_extension_atr`：突破收盘超出关键位多少 ATR；
-- `breakout_body_efficiency`；
-- `breakout_close_location`；
-- `breakout_strength`；
-- `hold_fraction`：突破后维持在关键位外的收盘比例；
-- `final_extension_atr`；
-- `followthrough_strength`；
-- `gates / reason_codes / failed_gates`。
-
-### 假突破过滤
-
-第一版至少拒绝这些情况：
+S5 返回：
 
 ```text
-影线越过但收盘未突破
-突破前没有形成测试/压力
-没有压缩（默认）
-突破 K 质量太差
-突破后重新跌回/涨回关键位内侧
-突破后没有继续扩展
-follow-through 方向反转或明显过弱
+push1_distance_atr
+push2_distance_atr
+reset_depth_atr
+push1_strength
+push2_strength
+strength_ratio
+displacement_ratio
+speed_ratio
+result_extension_atr
+acceptance_fraction
+trigger_strength
+entry_reference
+invalidation_reference
+gates
+reason_codes
+failed_gates
+signal_state
 ```
 
-这并不代表这些过滤条件一定有统计优势。S6 必须分别做消融测试，检验删掉 `compression`、`test_count`、`hold` 等变量以后净收益是否显著变化。
+其中 `entry_reference` / `invalidation_reference` 仍然只是研究和展示字段，不是 Binance Order。
 
 ### 第一版实验参数
 
 ```text
-pressure_bars                   = 12
-breakout_window_bars            = 2
-followthrough_bars              = 3
-min_tests                       = 2
-test_tolerance_atr              = 0.40
-max_approach_distance_atr       = 0.80
-max_compression_ratio           = 0.90
-min_breakout_extension_atr      = 0.10
-min_breakout_body_efficiency    = 0.45
-min_breakout_close_location     = 0.65
-min_breakout_strength           = 0.40
-max_reentry_atr                 = 0.15
-min_hold_fraction               = 1.00
-min_followthrough_extension_atr = 0.05
-min_followthrough_strength      = 0.25
+push1_bars                              = 6
+reset_bars                              = 4
+push2_bars                              = 6
+trigger_bars                            = 3
+level_tolerance_atr                     = 0.80
+min_reset_depth_atr                     = 0.35
+min_push1_strength                      = 0.45
+max_push2_to_push1_strength_ratio       = 0.82
+max_push2_to_push1_displacement_ratio   = 0.90
+max_push2_to_push1_speed_ratio          = 0.90
+max_push2_result_extension_atr          = 0.20
+max_acceptance_fraction                 = 0.34
+min_trigger_strength                    = 0.40
+min_trigger_to_push2_ratio              = 0.75
 ```
 
-这些数字全部是 D 级待检验参数，禁止在完整历史数据上反复调到最赚钱后再把结果当作真实优势。
+这些数字全部是 D 级实验参数。S6 必须做参数扰动和消融，不能把历史最优参数当成真实规律。
 
 ## 执行安全边界
 
-S2-S4 都只生成研究特征或 `candidate`。这些模块中没有：
+S2-S5 只生成特征或 `candidate`，模块中不允许出现：
 
 ```text
 create_order
 BUY / SELL
 CLOSE
 change_leverage
-Binance private API
+Binance private order API
 ```
 
-只有后续 Risk Engine、Execution Engine 通过独立验收后，candidate 才可能进入 Testnet。
+候选信号必须先进入独立 Risk Engine；只有通过后续 Testnet 验收，才考虑接 Execution Engine。
 
-## 下一阶段
+## 下一阶段 — S6
 
-S5 实现 `Second-Push Failure`：比较第一次推进和第二次推进的效率、结果、结构突破能力，并要求反向动能确认。S5 完成后，三类核心 Setup 才进入 S6 统一回测、交易成本、walk-forward 和 ablation。
+三类核心 Setup 已具备第一版：
+
+```text
+Trend Pullback Continuation
+Breakout Continuation
+Second-Push Failure
+```
+
+下一步进入统一回测框架：历史数据切片、手续费、滑点、funding、无未来函数事件循环、每种 Setup 独立统计、组合统计、walk-forward、参数稳定性和 ablation。第一目标不是“调到赚钱”，而是判断哪些规则在样本外仍有统计价值。

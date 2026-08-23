@@ -1,6 +1,6 @@
 import pytest
 
-from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials
+from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials, _proxy_config_from_env
 
 
 class FakeExchange:
@@ -281,3 +281,38 @@ def test_close_position_refuses_ambiguous_or_missing_position():
             client_order_id="jh_close_none",
             confirm="CLOSE_TESTNET_POSITION",
         )
+
+
+def test_proxy_config_from_env_normalizes_one_sided_proxy(monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    assert _proxy_config_from_env() == {
+        "http": "http://127.0.0.1:7890",
+        "https": "http://127.0.0.1:7890",
+    }
+
+
+def test_real_ccxt_factory_receives_explicit_runtime_proxy(monkeypatch):
+    fake = FakeExchange()
+    captured = {}
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    def factory(config):
+        captured.update(config)
+        return fake
+
+    monkeypatch.setattr("exchange.testnet_gateway.ccxt.binanceusdm", factory)
+    gw = BinanceTestnetGateway(TestnetCredentials("key", "secret"))
+
+    assert captured["proxies"] == {
+        "http": "http://127.0.0.1:7890",
+        "https": "http://127.0.0.1:7890",
+    }
+    assert gw.status()["proxy_configured"] is True
+    assert fake.events == [("demo_trading", True)]

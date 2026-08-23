@@ -1,11 +1,19 @@
 from sqlalchemy import desc
+
+from config import REFERENCE_CAPITAL_USDT
 from models.account_snapshot import AccountSnapshot
 
 
 def latest_account(db) -> dict:
     snap = db.query(AccountSnapshot).order_by(desc(AccountSnapshot.id)).first()
     if not snap:
-        snap = AccountSnapshot(equity=20, balance=20, daily_pnl=0, total_pnl=0, max_drawdown=0)
+        snap = AccountSnapshot(
+            equity=REFERENCE_CAPITAL_USDT,
+            balance=REFERENCE_CAPITAL_USDT,
+            daily_pnl=0,
+            total_pnl=0,
+            max_drawdown=0,
+        )
         db.add(snap)
         db.commit()
         db.refresh(snap)

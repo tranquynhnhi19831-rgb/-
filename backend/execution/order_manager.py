@@ -1,40 +1,14 @@
-from datetime import datetime
-from models.trade import Trade
-from models.position import Position
-
-
 class OrderManager:
-    def execute(self, db, cfg: dict, signal: dict, price: float, qty: float, stop: float, take: float, reason: str, deepseek_summary: str) -> Trade:
-        trade = Trade(
-            symbol=signal["symbol"],
-            side=signal["signal_type"],
-            entry_price=price,
-            exit_price=price,
-            stop_loss=stop,
-            take_profit=take,
-            quantity=qty,
-            leverage=cfg["default_leverage"],
-            fee=price * qty * 0.0004,
-            pnl=0,
-            dry_run=cfg["dry_run"],
-            reason=reason,
-            deepseek_summary=deepseek_summary,
-            close_time=datetime.utcnow(),
-        )
-        db.add(trade)
+    """Deprecated pre-S7 execution shim kept only for import compatibility.
 
-        db.query(Position).filter(Position.is_open.is_(True)).update({"is_open": False})
-        pos = Position(
-            symbol=signal["symbol"],
-            side=signal["signal_type"],
-            entry_price=price,
-            mark_price=price,
-            quantity=qty,
-            leverage=cfg["default_leverage"],
-            unrealized_pnl=0,
-            is_open=True,
+    The historical implementation wrote a closed Trade and an open Position in
+    the same call, which is an inconsistent ledger state. S7 uses the dedicated
+    Local Paper engine and BinanceTestnetGateway instead. Fail closed here so a
+    stale import can never mutate the trading database accidentally.
+    """
+
+    def execute(self, *args, **kwargs):
+        raise RuntimeError(
+            "legacy OrderManager is disabled: use services.trading_engine for Local Paper "
+            "or exchange.testnet_gateway for Binance Demo execution"
         )
-        db.add(pos)
-        db.commit()
-        db.refresh(trade)
-        return trade

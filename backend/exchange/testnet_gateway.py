@@ -10,7 +10,8 @@ import ccxt
 from exchange.binance_client import BinanceClient
 
 TESTNET_ENVIRONMENT = "TESTNET"
-MAX_TESTNET_ORDER_NOTIONAL_USDT = 10.0
+# 100U * 10% max margin * 3x leverage = 30U maximum position notional.
+MAX_TESTNET_ORDER_NOTIONAL_USDT = 30.0
 CLIENT_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,36}$")
 
 
@@ -101,9 +102,19 @@ class BinanceTestnetGateway:
             raise ValueError("target_notional_usdt must be > 0")
         if target_notional_usdt > self.max_order_notional_usdt + 1e-9:
             raise ValueError(
-                f"S7 Testnet order notional exceeds hard cap of {self.max_order_notional_usdt:.2f} USDT"
+                f"S7 Testnet requested notional exceeds hard cap of {self.max_order_notional_usdt:.2f} USDT"
             )
-        return self.market.preview_market_order(symbol, target_notional_usdt)
+
+        preview = self.market.preview_market_order(symbol, target_notional_usdt)
+        # Exchange filters can round a tiny request upward to minQty/minNotional.
+        # Never allow that normalization to silently violate the 100U risk cap.
+        actual_notional = float(preview["actual_notional_usdt"])
+        if actual_notional > self.max_order_notional_usdt + 1e-9:
+            raise ValueError(
+                "Binance minimum quantity/notional would exceed the S7 hard position cap: "
+                f"{actual_notional:.4f} > {self.max_order_notional_usdt:.2f} USDT"
+            )
+        return preview
 
     def status(self) -> dict:
         """Local status only; does not make a network call."""

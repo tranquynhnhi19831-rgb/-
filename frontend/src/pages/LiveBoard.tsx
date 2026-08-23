@@ -209,7 +209,7 @@ function StrategyReason({ value }: { value: string }) {
   return (
     <div className="space-y-1">
       <div className="font-medium text-slate-200">{setup}</div>
-      {details && <div className="text-xs leading-5 text-slate-400">{details.replaceAll(',', ' · ')}</div>}
+      {details && <div className="text-xs leading-5 text-slate-400">{details.split(',').join(' · ')}</div>}
     </div>
   )
 }

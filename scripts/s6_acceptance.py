@@ -43,6 +43,7 @@ def _checks(result: dict) -> dict[str, bool]:
     metrics = result["metrics"]
     bars = result["bars"]
     return {
+        "official_data_vision_source": result.get("data_source") == "vision",
         "context_data_received": int(bars["context"]) > 0,
         "execution_data_received": int(bars["execution"]) > 0,
         "initial_equity_is_100u": abs(float(metrics["initial_equity"]) - 100.0) < 1e-9,
@@ -61,52 +62,64 @@ def run_acceptance(symbol: str, start: str, end: str) -> dict:
     passed = True
 
     for name, setups in VARIANTS.items():
-        result = run_backtest(
-            symbol,
-            start,
-            end,
-            enabled_setups=tuple(setups),
-            initial_equity=100.0,
-            risk_per_trade=0.005,
-            fee_rate=0.0004,
-            slippage_bps=2.0,
-            reward_risk=1.5,
-            leverage=3.0,
-            max_margin_fraction=0.10,
-        )
-        checks = _checks(result)
-        variant_passed = all(checks.values())
+        try:
+            result = run_backtest(
+                symbol,
+                start,
+                end,
+                enabled_setups=tuple(setups),
+                initial_equity=100.0,
+                risk_per_trade=0.005,
+                fee_rate=0.0004,
+                slippage_bps=2.0,
+                reward_risk=1.5,
+                leverage=3.0,
+                max_margin_fraction=0.10,
+                data_source="vision",
+            )
+            checks = _checks(result)
+            variant_passed = all(checks.values())
+            metrics = result["metrics"]
+            variants[name] = {
+                "passed": variant_passed,
+                "data_source": result.get("data_source"),
+                "funding_source": result.get("funding_source"),
+                "enabled_setups": result["enabled_setups"],
+                "bars": result["bars"],
+                "signals_generated": result["signals_generated"],
+                "skipped_signals": result["skipped_signals"],
+                "checks": checks,
+                "metrics": {
+                    "initial_equity": metrics["initial_equity"],
+                    "final_equity": metrics["final_equity"],
+                    "net_pnl": metrics["net_pnl"],
+                    "total_return": metrics["total_return"],
+                    "trades": metrics["trades"],
+                    "wins": metrics["wins"],
+                    "losses": metrics["losses"],
+                    "win_rate": metrics["win_rate"],
+                    "expectancy": metrics["expectancy"],
+                    "profit_factor": metrics["profit_factor"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "max_consecutive_losses": metrics["max_consecutive_losses"],
+                    "fees": metrics["fees"],
+                    "funding": metrics["funding"],
+                    "by_setup": metrics.get("by_setup", {}),
+                },
+                "note": (
+                    "Zero trades does not fail S6.5. This gate validates deterministic data/execution plumbing. "
+                    "Funding arithmetic is unit-tested; CI Data Vision mode intentionally does not call the geo-restricted Futures REST host."
+                ),
+            }
+        except Exception as exc:
+            variant_passed = False
+            variants[name] = {
+                "passed": False,
+                "enabled_setups": list(setups),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
         passed = passed and variant_passed
-        metrics = result["metrics"]
-        variants[name] = {
-            "passed": variant_passed,
-            "enabled_setups": result["enabled_setups"],
-            "bars": result["bars"],
-            "signals_generated": result["signals_generated"],
-            "skipped_signals": result["skipped_signals"],
-            "checks": checks,
-            "metrics": {
-                "initial_equity": metrics["initial_equity"],
-                "final_equity": metrics["final_equity"],
-                "net_pnl": metrics["net_pnl"],
-                "total_return": metrics["total_return"],
-                "trades": metrics["trades"],
-                "wins": metrics["wins"],
-                "losses": metrics["losses"],
-                "win_rate": metrics["win_rate"],
-                "expectancy": metrics["expectancy"],
-                "profit_factor": metrics["profit_factor"],
-                "max_drawdown": metrics["max_drawdown"],
-                "max_consecutive_losses": metrics["max_consecutive_losses"],
-                "fees": metrics["fees"],
-                "funding": metrics["funding"],
-                "by_setup": metrics.get("by_setup", {}),
-            },
-            "note": (
-                "Zero trades does not fail S6.5. This gate validates deterministic data/execution plumbing; "
-                "statistical profitability requires longer walk-forward studies."
-            ),
-        }
 
     return _sanitize(
         {
@@ -115,7 +128,8 @@ def run_acceptance(symbol: str, start: str, end: str) -> dict:
             "symbol": symbol,
             "start": start,
             "end": end,
-            "market": "BINANCE_USDT_M_PUBLIC_HISTORY",
+            "market": "BINANCE_USDT_M",
+            "ci_history_source": "BINANCE_DATA_VISION_OFFICIAL_ARCHIVE",
             "variants": variants,
             "profitability_gate": False,
             "next_stage_if_passed": "S7_BINANCE_USDT_M_TESTNET",

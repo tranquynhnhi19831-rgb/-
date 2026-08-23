@@ -16,6 +16,10 @@ jobs:
           python-version: "3.12"
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
+      - name: Smoke import both API applications
+        env:
+          PYTHONPATH: backend
+        run: python -c "import main, public_main; print('api imports ok')"
       - name: Run backend tests
         env:
           PYTHONPATH: backend

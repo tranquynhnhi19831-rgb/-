@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from backtest.types import BacktestTrade
 
@@ -30,11 +31,19 @@ def max_consecutive_losses(trades: Sequence[BacktestTrade]) -> int:
     return worst
 
 
+def _profit_factor(gross_profit: float, gross_loss: float) -> float | None:
+    if gross_loss > 0:
+        return float(gross_profit / gross_loss)
+    if gross_profit > 0:
+        return None
+    return 0.0
+
+
 def summarize(
     trades: Sequence[BacktestTrade],
     equity_curve: Sequence[float],
     initial_equity: float,
-) -> dict[str, float | int]:
+) -> dict[str, Any]:
     final_equity = float(equity_curve[-1]) if equity_curve else float(initial_equity)
     wins = [t for t in trades if t.net_pnl > 0]
     losses = [t for t in trades if t.net_pnl < 0]
@@ -57,7 +66,7 @@ def summarize(
         "avg_win": float(gross_profit / len(wins)) if wins else 0.0,
         "avg_loss": float(gross_loss / len(losses)) if losses else 0.0,
         "expectancy": float(total_net_pnl / count) if count else 0.0,
-        "profit_factor": float(gross_profit / gross_loss) if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0),
+        "profit_factor": _profit_factor(gross_profit, gross_loss),
         "max_drawdown": max_drawdown(equity_curve),
         "max_consecutive_losses": max_consecutive_losses(trades),
         "fees": float(total_fees),
@@ -65,12 +74,12 @@ def summarize(
     }
 
 
-def summarize_by_setup(trades: Sequence[BacktestTrade]) -> dict[str, dict[str, float | int]]:
+def summarize_by_setup(trades: Sequence[BacktestTrade]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, list[BacktestTrade]] = {}
     for trade in trades:
         grouped.setdefault(trade.setup, []).append(trade)
 
-    result: dict[str, dict[str, float | int]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for setup, rows in grouped.items():
         wins = [t for t in rows if t.net_pnl > 0]
         losses = [t for t in rows if t.net_pnl < 0]
@@ -81,7 +90,7 @@ def summarize_by_setup(trades: Sequence[BacktestTrade]) -> dict[str, dict[str, f
             "win_rate": len(wins) / len(rows) if rows else 0.0,
             "net_pnl": sum(t.net_pnl for t in rows),
             "expectancy": sum(t.net_pnl for t in rows) / len(rows) if rows else 0.0,
-            "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0),
+            "profit_factor": _profit_factor(gross_profit, gross_loss),
             "fees": sum(t.fees for t in rows),
             "funding": sum(t.funding for t in rows),
         }

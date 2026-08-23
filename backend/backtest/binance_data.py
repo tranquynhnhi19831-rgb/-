@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import ccxt
 import pandas as pd
 
@@ -17,6 +15,18 @@ def _to_ms(value: str | int | None) -> int | None:
     else:
         dt = dt.tz_convert("UTC")
     return int(dt.timestamp() * 1000)
+
+
+def _normalize_usdm_symbol(symbol: str) -> str:
+    value = symbol.strip().upper()
+    if ":" in value:
+        return value
+    if value.endswith("/USDT"):
+        return f"{value}:USDT"
+    if value.endswith("USDT") and "/" not in value:
+        base = value[:-4]
+        return f"{base}/USDT:USDT"
+    return value
 
 
 def fetch_usdm_ohlcv(
@@ -42,13 +52,18 @@ def fetch_usdm_ohlcv(
         raise ValueError("max_bars must be >= 1")
 
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
+    market_symbol = _normalize_usdm_symbol(symbol)
     tf_seconds = exchange.parse_timeframe(timeframe)
     tf_ms = int(tf_seconds * 1000)
     cursor = start_ms
     rows: list[list[float]] = []
+    exhausted_by_limit = False
 
-    while cursor < end_ms and len(rows) < max_bars:
-        batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
+    while cursor < end_ms:
+        if len(rows) >= max_bars:
+            exhausted_by_limit = True
+            break
+        batch = exchange.fetch_ohlcv(market_symbol, timeframe=timeframe, since=cursor, limit=limit)
         if not batch:
             break
         for row in batch:
@@ -57,6 +72,7 @@ def fetch_usdm_ohlcv(
                 break
             rows.append(row)
             if len(rows) >= max_bars:
+                exhausted_by_limit = True
                 break
         last_open = int(batch[-1][0])
         next_cursor = last_open + tf_ms
@@ -65,6 +81,11 @@ def fetch_usdm_ohlcv(
         cursor = next_cursor
         if last_open >= end_ms - tf_ms:
             break
+
+    if exhausted_by_limit and cursor < end_ms - tf_ms:
+        raise ValueError(
+            f"requested range exceeds max_bars={max_bars} for timeframe={timeframe}; split the backtest range"
+        )
 
     if not rows:
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -96,10 +117,11 @@ def fetch_usdm_funding_rates(
         raise ValueError("end must be after start")
 
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
+    market_symbol = _normalize_usdm_symbol(symbol)
     cursor = start_ms
     rows: list[dict] = []
     while cursor < end_ms:
-        batch = exchange.fetch_funding_rate_history(symbol, since=cursor, limit=limit)
+        batch = exchange.fetch_funding_rate_history(market_symbol, since=cursor, limit=limit)
         if not batch:
             break
         for item in batch:

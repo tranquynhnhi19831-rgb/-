@@ -51,15 +51,15 @@ jobs:
           python-version: "3.12"
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
-      - name: Run Binance public-history acceptance
+      - name: Run Binance Data Vision acceptance
         env:
           PYTHONPATH: backend
         run: |
           mkdir -p artifacts
           python scripts/s6_acceptance.py \
             --symbol BTC/USDT \
-            --start 2026-08-01 \
-            --end 2026-08-03 \
+            --start 2026-08-01T00:00:00Z \
+            --end 2026-08-01T06:00:00Z \
             --output artifacts/s6_acceptance.json
       - name: Upload S6 acceptance report
         if: always()

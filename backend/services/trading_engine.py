@@ -85,6 +85,19 @@ class TradingEngine:
             .first()
         )
 
+    @staticmethod
+    def _drawdown_fraction(peak_equity: float, current_equity: float) -> float:
+        peak = max(float(peak_equity), 0.0)
+        current = float(current_equity)
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - current) / peak)
+
+    @staticmethod
+    def _historical_peak_equity(db) -> float:
+        stored_peak = db.query(func.max(AccountSnapshot.equity)).scalar()
+        return max(REFERENCE_CAPITAL_USDT, float(stored_peak or 0.0))
+
     def _close_existing_paper_position(self, db, position: Position) -> dict:
         trade = self._latest_open_trade(db, position.symbol)
         if trade is None:
@@ -115,7 +128,8 @@ class TradingEngine:
         balance = float(previous["balance"]) + net
         total_pnl = float(previous["total_pnl"]) + net
         daily_pnl = float(previous["daily_pnl"]) + net
-        drawdown = max(0.0, (REFERENCE_CAPITAL_USDT - balance) / REFERENCE_CAPITAL_USDT)
+        peak_equity = self._historical_peak_equity(db)
+        drawdown = self._drawdown_fraction(peak_equity, balance)
         db.add(
             AccountSnapshot(
                 equity=balance,
@@ -140,6 +154,8 @@ class TradingEngine:
             "exit": exit_price,
             "net_pnl_usdt": net,
             "outcome": "TARGET" if use_target else "STOP",
+            "equity_peak_usdt": peak_equity,
+            "drawdown_fraction": drawdown,
         }
 
     async def start_once(self, db) -> dict:

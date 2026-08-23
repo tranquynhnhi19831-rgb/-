@@ -9,6 +9,15 @@ class FakeExchange:
         self.created_orders = []
         self.test_orders = []
         self.positions = []
+        self.urls = {
+            "api": {
+                "fapiPublic": "https://demo-fapi.binance.com/fapi/v1",
+                "fapiPrivate": "https://demo-fapi.binance.com/fapi/v1",
+                "fapiPublicV2": "https://demo-fapi.binance.com/fapi/v2",
+                "fapiPrivateV2": "https://demo-fapi.binance.com/fapi/v2",
+                "fapiPrivateV3": "https://demo-fapi.binance.com/fapi/v3",
+            }
+        }
         self.markets = {
             "BTC/USDT:USDT": {
                 "id": "BTCUSDT",
@@ -24,8 +33,8 @@ class FakeExchange:
             }
         }
 
-    def set_sandbox_mode(self, enabled):
-        self.events.append(("sandbox", enabled))
+    def enable_demo_trading(self, enabled):
+        self.events.append(("demo_trading", enabled))
 
     def load_markets(self, reload=False):
         self.events.append(("load_markets", reload))
@@ -94,13 +103,33 @@ def gateway(fake=None, configured=True):
     return BinanceTestnetGateway(creds, exchange=exchange), exchange
 
 
-def test_gateway_enables_sandbox_before_any_market_call():
+def test_gateway_enables_demo_trading_before_any_market_call():
     gw, fake = gateway()
 
-    assert fake.events == [("sandbox", True)]
+    assert fake.events == [("demo_trading", True)]
     assert gw.status()["environment"] == "TESTNET"
+    assert gw.status()["binance_mode"] == "DEMO_TRADING"
+    assert gw.status()["official_rest_base"] == "https://demo-fapi.binance.com"
     assert gw.status()["mainnet_orders_supported"] is False
     assert gw.status()["max_order_notional_usdt"] == 30.0
+
+
+def test_gateway_fails_closed_if_fapi_route_is_mainnet():
+    fake = FakeExchange()
+    fake.urls["api"]["fapiPrivate"] = "https://fapi.binance.com/fapi/v1"
+    creds = TestnetCredentials("key", "secret")
+
+    with pytest.raises(RuntimeError, match="unsafe Binance USD-M API route"):
+        BinanceTestnetGateway(creds, exchange=fake)
+
+
+def test_gateway_requires_modern_ccxt_demo_trading_capability():
+    fake = FakeExchange()
+    fake.enable_demo_trading = None
+    creds = TestnetCredentials("key", "secret")
+
+    with pytest.raises(RuntimeError, match="CCXT >= 4.5.6"):
+        BinanceTestnetGateway(creds, exchange=fake)
 
 
 def test_private_calls_require_server_side_testnet_credentials():
@@ -128,6 +157,7 @@ def test_signed_order_test_creates_no_order_and_requires_explicit_confirmation()
 
     assert result["creates_order"] is False
     assert result["environment"] == "TESTNET"
+    assert result["binance_mode"] == "DEMO_TRADING"
     assert len(fake.test_orders) == 1
     assert fake.created_orders == []
     assert fake.test_orders[0]["symbol"] == "BTCUSDT"

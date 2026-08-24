@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 
 import pandas as pd
@@ -14,6 +13,18 @@ SLIPPAGE_BPS = 2.0
 FEE_RATE = 0.0004
 MAX_HOLD_BARS = 64
 TARGET_LEVELS_R = (0.5, 1.0, 1.5, 1.8, 2.0, 2.5)
+FEATURE_KEYS = (
+    "quality_score",
+    "macro_efficiency",
+    "context_efficiency",
+    "level_distance_atr",
+    "impulse_strength",
+    "pullback_strength",
+    "trigger_strength",
+    "impulse_bars",
+    "pullback_bars",
+    "trigger_bars",
+)
 
 
 def _apply_entry_slippage(price: float, side: str) -> float:
@@ -24,8 +35,27 @@ def _apply_entry_slippage(price: float, side: str) -> float:
 def _quantile(values: list[float], q: float) -> float | None:
     if not values:
         return None
-    s = pd.Series(values, dtype=float)
-    return float(s.quantile(q))
+    return float(pd.Series(values, dtype=float).quantile(q))
+
+
+def _numeric(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _feature_payload(signal) -> dict:
+    metadata = dict(signal.metadata or {})
+    payload = {key: _numeric(metadata.get(key)) for key in FEATURE_KEYS}
+    payload["quality_score"] = _numeric(metadata.get("quality_score"))
+    payload["macro_regime"] = metadata.get("macro_regime")
+    payload["context_regime"] = metadata.get("context_regime") or metadata.get("regime")
+    payload["quality_components"] = metadata.get("quality_components", {})
+    payload["quality_reason_codes"] = metadata.get("quality_reason_codes", [])
+    return payload
 
 
 def _one_signal(execution: pd.DataFrame, signal) -> dict | None:
@@ -72,8 +102,8 @@ def _one_signal(execution: pd.DataFrame, signal) -> dict | None:
             max_favorable_bar = offset
         max_adverse_r = max(max_adverse_r, float(adverse))
 
-        # Conservative STOP_FIRST policy. If stop and an R threshold are both
-        # touched in the same bar, the threshold is not credited first.
+        # Conservative STOP_FIRST: same-bar stop + favorable threshold credits
+        # the stop first, so the threshold is not counted as reached-before-stop.
         if gap_stop or hit_stop:
             stopped = True
             stop_bar = offset
@@ -86,12 +116,15 @@ def _one_signal(execution: pd.DataFrame, signal) -> dict | None:
 
     close_at_end = float(execution.loc[end, "close"])
     mark_r = side_sign * (close_at_end - entry) / stop_distance
-    round_trip_friction_estimate = (
-        (entry + max(entry, 1e-12)) * FEE_RATE
-        + 2.0 * entry * (SLIPPAGE_BPS / 10_000.0)
-    )
-    friction_to_one_unit_risk = round_trip_friction_estimate / max(stop_distance, 1e-12)
 
+    # Quantity cancels when comparing per-unit round-trip friction with per-unit
+    # structural stop risk. Use entry price for both fee legs as a neutral
+    # diagnostic approximation; this is not used for execution or PnL.
+    fee_per_unit = 2.0 * entry * FEE_RATE
+    slippage_per_unit = 2.0 * entry * (SLIPPAGE_BPS / 10_000.0)
+    friction_to_one_unit_risk = (fee_per_unit + slippage_per_unit) / max(stop_distance, 1e-12)
+
+    features = _feature_payload(signal)
     return {
         "signal_index": int(signal.index),
         "timestamp": str(signal.timestamp),
@@ -108,7 +141,27 @@ def _one_signal(execution: pd.DataFrame, signal) -> dict | None:
         "mark_r_at_64_or_data_end": float(mark_r),
         "target_before_stop": target_before_stop,
         "friction_to_price_risk_ratio_estimate": float(friction_to_one_unit_risk),
+        "features": features,
     }
+
+
+def _feature_summary(rows: list[dict]) -> dict:
+    result: dict[str, dict] = {}
+    for key in FEATURE_KEYS:
+        values = [
+            float(row["features"][key])
+            for row in rows
+            if row.get("features", {}).get(key) is not None
+        ]
+        if values:
+            result[key] = {
+                "count": len(values),
+                "mean": statistics.fmean(values),
+                "median": statistics.median(values),
+                "p25": _quantile(values, 0.25),
+                "p75": _quantile(values, 0.75),
+            }
+    return result
 
 
 def _summary(rows: list[dict]) -> dict:
@@ -121,6 +174,9 @@ def _summary(rows: list[dict]) -> dict:
         for level in TARGET_LEVELS_R
     }
     count = len(rows)
+    poor = [r for r in rows if float(r["mfe_r_before_stop_or_timeout"]) < 0.5]
+    useful = [r for r in rows if float(r["mfe_r_before_stop_or_timeout"]) >= 1.0]
+    strong = [r for r in rows if float(r["mfe_r_before_stop_or_timeout"]) >= 1.8]
     return {
         "signals_analyzed": count,
         "stopped_within_64": len(stopped),
@@ -147,6 +203,12 @@ def _summary(rows: list[dict]) -> dict:
             "median": (statistics.median(friction) if friction else 0.0),
             "p75": _quantile(friction, 0.75),
             "max": (max(friction) if friction else 0.0),
+        },
+        "feature_groups": {
+            "all": _feature_summary(rows),
+            "poor_mfe_lt_0_5r": {"count": len(poor), "features": _feature_summary(poor)},
+            "useful_mfe_ge_1r": {"count": len(useful), "features": _feature_summary(useful)},
+            "strong_mfe_ge_1_8r": {"count": len(strong), "features": _feature_summary(strong)},
         },
     }
 
@@ -179,7 +241,7 @@ def main() -> None:
             "same_bar": "STOP_FIRST",
             "max_hold_bars": MAX_HOLD_BARS,
             "target_levels_r": list(TARGET_LEVELS_R),
-            "note": "diagnostic only; no exit parameter is promoted from these windows",
+            "note": "diagnostic only; 2025 remains reserved as an untouched validation year",
         },
         "summary": _summary(rows),
         "trades": rows,

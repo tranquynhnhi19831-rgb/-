@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from init_db import init_db
+from api.routes_audit import router as audit_router
 from api.routes_config import router as config_router
 from api.routes_trading import router as trading_router
 from api.routes_dashboard import router as dashboard_router
@@ -29,6 +30,7 @@ app.include_router(trading_router)
 app.include_router(dashboard_router)
 app.include_router(backtest_router)
 app.include_router(testnet_router)
+app.include_router(audit_router)
 app.include_router(ws_router)
 
 

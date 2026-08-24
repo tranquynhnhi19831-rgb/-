@@ -99,6 +99,47 @@ def test_daily_trade_limit_has_stable_reason_code():
     assert "单日交易上限" in decision.message
 
 
+def test_previous_day_loss_streak_does_not_deadlock_new_utc_day():
+    manager = RiskManager()
+    decision = manager.evaluate(
+        BASE_CFG,
+        context(trades_today=0, consecutive_losses=5),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert decision.allowed
+
+
+def test_only_losses_possible_within_today_count_toward_cooldown():
+    manager = RiskManager()
+    decision = manager.evaluate(
+        BASE_CFG,
+        context(trades_today=1, consecutive_losses=5),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert decision.allowed
+
+
+def test_three_same_day_consecutive_losses_block_rest_of_day():
+    manager = RiskManager()
+    cfg = {**BASE_CFG, "max_trades_per_day": 5}
+    decision = manager.evaluate(
+        cfg,
+        context(trades_today=3, consecutive_losses=5),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert not decision.allowed
+    assert decision.code == "MAX_CONSECUTIVE_LOSSES_REACHED"
+
+
 def test_allows_valid_small_account_trade_context():
     manager = RiskManager()
     allowed, reason = manager.check(

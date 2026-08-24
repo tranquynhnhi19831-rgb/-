@@ -4,6 +4,7 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
+from config import INITIAL_TRADING_UNIVERSE, UNIVERSE_AS_OF_UTC
 from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials, _proxy_config_from_env
 
 router = APIRouter(prefix="/api/testnet", tags=["testnet"])
@@ -49,6 +50,8 @@ def testnet_status():
         "order_routes_enabled": _orders_enabled(),
         "mainnet_orders_supported": False,
         "credential_source": "SERVER_ENV_ONLY",
+        "fixed_universe": list(INITIAL_TRADING_UNIVERSE),
+        "universe_as_of_utc": UNIVERSE_AS_OF_UTC,
     }
 
 
@@ -56,6 +59,21 @@ def testnet_status():
 def testnet_authenticated_health():
     try:
         return _gateway().authenticated_health()
+    except Exception as exc:
+        _bad_request(exc)
+
+
+@router.get("/universe-health")
+def testnet_universe_health():
+    """Read-only public-market preflight for the fixed seven-symbol universe."""
+    try:
+        result = _gateway().market.validate_usdm_universe(INITIAL_TRADING_UNIVERSE)
+        return {
+            "environment": "TESTNET",
+            "binance_mode": "DEMO_TRADING",
+            "universe_as_of_utc": UNIVERSE_AS_OF_UTC,
+            **result,
+        }
     except Exception as exc:
         _bad_request(exc)
 

@@ -58,8 +58,23 @@ class RiskManager:
             return RiskDecision(False, "MAX_TRADES_PER_DAY_REACHED", "达到单日交易上限")
         if ctx.open_positions >= int(cfg.get("max_open_positions", 0)):
             return RiskDecision(False, "MAX_OPEN_POSITIONS_REACHED", "超过最大持仓数")
-        if ctx.consecutive_losses >= int(cfg.get("max_consecutive_losses", 0)):
-            return RiskDecision(False, "MAX_CONSECUTIVE_LOSSES_REACHED", "连续亏损达到上限")
+
+        # ``consecutive_losses`` is reconstructed from the latest ledger rows and
+        # may include the previous UTC day. Never let an old streak permanently
+        # deadlock the system: only losses that could have occurred among today's
+        # already-opened trades are eligible for the current-day cooldown. This
+        # preserves the intended semantics: three consecutive losses stop new
+        # entries for the rest of that UTC day, then the next UTC day starts clean.
+        current_day_loss_streak = min(
+            max(0, int(ctx.consecutive_losses)),
+            max(0, int(ctx.trades_today)),
+        )
+        max_consecutive_losses = int(cfg.get("max_consecutive_losses", 0))
+        if max_consecutive_losses <= 0:
+            return RiskDecision(False, "INVALID_MAX_CONSECUTIVE_LOSSES", "连续亏损上限参数无效")
+        if current_day_loss_streak >= max_consecutive_losses:
+            return RiskDecision(False, "MAX_CONSECUTIVE_LOSSES_REACHED", "当日连续亏损达到上限")
+
         if rr < 1.5:
             return RiskDecision(False, "MIN_RR_NOT_MET", "盈亏比不足1.5")
         if margin_ratio <= 0 or margin_ratio > float(cfg.get("max_margin_per_trade", 0.0)):

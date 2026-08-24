@@ -9,15 +9,16 @@ DB_URL = f"sqlite:///{DB_PATH}"
 # Initial production research universe, fixed in code for reproducibility.
 # Source snapshot: CoinMarketCap 2026-08-24 market-cap ranking. Stablecoins are
 # excluded because USDT is our quote/margin asset and stablecoin directional
-# futures are not part of the Jianghe strategy universe. The seven assets are
-# also expected to be available as Binance USDⓈ-M perpetuals; runtime exchange
-# preflight must still verify contract status before any order path is enabled.
+# futures are not part of the Jianghe strategy universe. After removing USDT
+# and USDC, the current top seven are BTC, ETH, XRP, BNB, SOL, TRX and HYPE.
+# Runtime exchange preflight must still verify each USDⓈ-M perpetual is active
+# before any autonomous Demo/order path is enabled.
 UNIVERSE_AS_OF_UTC = "2026-08-24"
 INITIAL_TRADING_UNIVERSE = (
     "BTC/USDT",
     "ETH/USDT",
-    "BNB/USDT",
     "XRP/USDT",
+    "BNB/USDT",
     "SOL/USDT",
     "TRX/USDT",
     "HYPE/USDT",

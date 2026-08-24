@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,21 +14,23 @@ TESTNET_ENVIRONMENT = "TESTNET"
 BINANCE_USDM_DEMO_REST_BASE = "https://demo-fapi.binance.com"
 # 100U * 10% max margin * 3x leverage = 30U maximum position notional.
 MAX_TESTNET_ORDER_NOTIONAL_USDT = 30.0
+HARD_TESTNET_MAX_LEVERAGE = 3
 CLIENT_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,36}$")
 
 
-def _proxy_config_from_env() -> dict[str, str]:
-    """Build explicit CCXT requests proxies from standard environment variables.
+class AmbiguousDemoOrderState(RuntimeError):
+    """Create request may have reached Binance, but its final state is unknown.
 
-    CCXT does not rely on requests' environment proxy discovery by default, so
-    the private Demo gateway must pass proxies explicitly when the runtime has
-    HTTP_PROXY/HTTPS_PROXY configured. This keeps local Binance Demo access on
-    the same approved network path already used by the host environment.
+    Callers must reconcile by clientOrderId. They must never retry the create
+    blindly because that can duplicate exposure after a transport timeout.
     """
+
+
+def _proxy_config_from_env() -> dict[str, str]:
+    """Build explicit CCXT requests proxies from standard environment variables."""
 
     http_proxy = (os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or "").strip()
     https_proxy = (os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or "").strip()
-
     if not http_proxy and not https_proxy:
         return {}
     if not http_proxy:
@@ -55,12 +58,12 @@ class TestnetCredentials:
 
 
 class BinanceTestnetGateway:
-    """Private Binance USD-M Demo/Testnet gateway with no Mainnet execution path.
+    """Private Binance USD-M Demo gateway with no Mainnet execution path.
 
-    Binance's current USD-M testing environment is exposed as Demo Trading.
-    S7 deliberately has no Mainnet base-url switch. The gateway enables CCXT
-    Demo Trading before any market/private call and verifies any active fapi
-    REST URLs point at Binance's documented demo host.
+    Order creation is idempotent by caller-supplied clientOrderId. A network
+    failure during create is treated as an ambiguous exchange state: the gateway
+    performs read-only reconciliation by origClientOrderId and never blindly
+    submits the create request a second time.
     """
 
     environment = TESTNET_ENVIRONMENT
@@ -94,14 +97,11 @@ class BinanceTestnetGateway:
         self.market = BinanceClient(exchange=self.exchange)
 
     def _enable_demo_trading(self) -> None:
-        # Binance deprecated the old Futures sandbox. Modern CCXT exposes the
-        # replacement environment through enable_demo_trading(True).
         enable_demo = getattr(self.exchange, "enable_demo_trading", None)
         if enable_demo is None:
             raise RuntimeError(
                 "installed CCXT does not support Binance Demo Trading; CCXT >= 4.5.6 is required"
             )
-        # Must happen before any exchange request.
         enable_demo(True)
 
     def _assert_demo_fapi_urls(self) -> None:
@@ -122,9 +122,6 @@ class BinanceTestnetGateway:
                 raise RuntimeError(
                     f"unsafe Binance USD-M API route after enabling Demo Trading: {key}={value}"
                 )
-
-        # Current CCXT exposes fapi keys. If a future SDK hides them, network
-        # acceptance still verifies the host, but do not fail injected test doubles.
         if checked == 0 and self.exchange.__class__.__module__.startswith("ccxt"):
             raise RuntimeError("unable to verify Binance Demo Trading USD-M REST routes")
 
@@ -166,8 +163,6 @@ class BinanceTestnetGateway:
             )
 
         preview = self.market.preview_market_order(symbol, target_notional_usdt)
-        # Exchange filters can round a tiny request upward to minQty/minNotional.
-        # Never allow that normalization to silently violate the 100U risk cap.
         actual_notional = float(preview["actual_notional_usdt"])
         if actual_notional > self.max_order_notional_usdt + 1e-9:
             raise ValueError(
@@ -176,8 +171,129 @@ class BinanceTestnetGateway:
             )
         return preview
 
+    @staticmethod
+    def _raw_symbol(exchange: Any, resolved: str) -> str:
+        market = exchange.market(resolved)
+        return str(market.get("id") or resolved.replace("/", "").split(":", 1)[0])
+
+    @staticmethod
+    def _order_not_found(exc: Exception) -> bool:
+        if isinstance(exc, getattr(ccxt, "OrderNotFound", ())):
+            return True
+        text = str(exc).lower()
+        return "-2013" in text or "order does not exist" in text or "unknown order" in text
+
+    def fetch_order_by_client_id(self, *, symbol: str, client_order_id: str) -> dict | None:
+        """Read-only lookup by Binance origClientOrderId."""
+        self._require_credentials()
+        client_id = self._validate_client_order_id(client_order_id)
+        resolved = self.market.resolve_symbol(symbol)
+        raw_symbol = self._raw_symbol(self.exchange, resolved)
+        endpoint = getattr(self.exchange, "fapiPrivateGetOrder", None)
+        if endpoint is None:
+            raise RuntimeError("installed CCXT build does not expose Binance Futures GET order endpoint")
+        try:
+            raw = endpoint({"symbol": raw_symbol, "origClientOrderId": client_id})
+        except Exception as exc:
+            if self._order_not_found(exc):
+                return None
+            raise
+        return self._safe_raw_order(raw)
+
+    def _reconcile_client_order_after_ambiguous_create(
+        self,
+        *,
+        symbol: str,
+        client_order_id: str,
+        attempts: int = 3,
+    ) -> dict | None:
+        # Read retries are safe; create retries are not.
+        for attempt in range(max(1, attempts)):
+            try:
+                order = self.fetch_order_by_client_id(symbol=symbol, client_order_id=client_order_id)
+                if order is not None:
+                    return order
+            except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout):
+                pass
+            if attempt + 1 < attempts:
+                time.sleep(0.25 * (2**attempt))
+        return None
+
+    @staticmethod
+    def _assert_existing_order_identity(existing: dict, *, client_id: str, side: str) -> None:
+        existing_client = str(existing.get("client_order_id") or "")
+        existing_side = str(existing.get("side") or "").upper()
+        if existing_client and existing_client != client_id:
+            raise RuntimeError("clientOrderId reconciliation returned a different client id")
+        if existing_side and existing_side != side:
+            raise RuntimeError("clientOrderId already belongs to an order with a different side")
+
+    def execution_account_preflight(
+        self,
+        *,
+        symbol: str,
+        max_leverage: int = HARD_TESTNET_MAX_LEVERAGE,
+    ) -> dict:
+        """Read-only validation of account/symbol execution invariants.
+
+        No account setting is changed. Actual Demo order creation is allowed only
+        when the account is one-way, the symbol is isolated, and leverage is in
+        [1, max_leverage]. Unknown settings fail closed.
+        """
+        self._require_credentials()
+        if max_leverage < 1 or max_leverage > HARD_TESTNET_MAX_LEVERAGE:
+            raise ValueError(f"max_leverage must be between 1 and {HARD_TESTNET_MAX_LEVERAGE}")
+
+        position_mode_endpoint = getattr(self.exchange, "fapiPrivateGetPositionSideDual", None)
+        if position_mode_endpoint is None:
+            raise RuntimeError("cannot verify Binance Futures position mode")
+        mode = position_mode_endpoint({}) or {}
+        raw_dual = mode.get("dualSidePosition")
+        if isinstance(raw_dual, str):
+            dual_side = raw_dual.strip().lower() == "true"
+        elif raw_dual is None:
+            raise RuntimeError("Binance position mode response is missing dualSidePosition")
+        else:
+            dual_side = bool(raw_dual)
+        if dual_side:
+            raise RuntimeError("HEDGE_MODE_NOT_ALLOWED: system requires one-way position mode")
+
+        resolved = self.market.resolve_symbol(symbol)
+        positions = self.exchange.fetch_positions([resolved]) or []
+        matching = [p for p in positions if str(p.get("symbol") or "") == resolved]
+        if len(matching) != 1:
+            raise RuntimeError(f"POSITION_CONFIG_UNAVAILABLE: expected one position config for {resolved}, found {len(matching)}")
+        position = matching[0]
+        info = position.get("info") if isinstance(position.get("info"), dict) else {}
+        margin_mode = str(position.get("marginMode") or info.get("marginType") or "").lower()
+        if not margin_mode and info.get("isolated") is not None:
+            raw_isolated = info.get("isolated")
+            isolated = raw_isolated if isinstance(raw_isolated, bool) else str(raw_isolated).lower() == "true"
+            margin_mode = "isolated" if isolated else "cross"
+        if margin_mode != "isolated":
+            raise RuntimeError(f"MARGIN_MODE_NOT_ISOLATED: {resolved} margin mode is {margin_mode or 'unknown'}")
+
+        raw_leverage = position.get("leverage") or info.get("leverage")
+        try:
+            leverage = int(float(raw_leverage))
+        except (TypeError, ValueError):
+            raise RuntimeError(f"LEVERAGE_UNAVAILABLE: cannot verify leverage for {resolved}")
+        if leverage < 1 or leverage > max_leverage:
+            raise RuntimeError(f"MAX_LEVERAGE_EXCEEDED: {resolved} leverage={leverage}, max={max_leverage}")
+
+        return {
+            "ok": True,
+            "environment": self.environment,
+            "binance_mode": "DEMO_TRADING",
+            "symbol": resolved,
+            "position_mode": "ONE_WAY",
+            "margin_mode": "isolated",
+            "leverage": leverage,
+            "max_allowed_leverage": max_leverage,
+            "mutated_settings": False,
+        }
+
     def status(self) -> dict:
-        """Local status only; does not make a network call."""
         return {
             "environment": self.environment,
             "binance_mode": "DEMO_TRADING",
@@ -186,11 +302,12 @@ class BinanceTestnetGateway:
             "demo_trading_required": True,
             "mainnet_orders_supported": False,
             "max_order_notional_usdt": self.max_order_notional_usdt,
+            "max_leverage": HARD_TESTNET_MAX_LEVERAGE,
             "proxy_configured": bool(_proxy_config_from_env()),
+            "idempotency": "CLIENT_ORDER_ID_RECONCILIATION_NO_BLIND_CREATE_RETRY",
         }
 
     def authenticated_health(self) -> dict:
-        """Verify Demo/Testnet credentials with a read-only private account request."""
         self._require_credentials()
         balance = self.exchange.fetch_balance()
         usdt = balance.get("USDT", {}) if isinstance(balance, dict) else {}
@@ -208,7 +325,6 @@ class BinanceTestnetGateway:
         positions = self.exchange.fetch_positions()
         open_orders = self.exchange.fetch_open_orders()
         usdt = balance.get("USDT", {}) if isinstance(balance, dict) else {}
-
         active_positions = []
         for position in positions or []:
             contracts = float(position.get("contracts") or 0.0)
@@ -223,9 +339,9 @@ class BinanceTestnetGateway:
                     "mark_price": float(position.get("markPrice") or 0.0),
                     "unrealized_pnl": float(position.get("unrealizedPnl") or 0.0),
                     "leverage": float(position.get("leverage") or 0.0),
+                    "margin_mode": position.get("marginMode"),
                 }
             )
-
         return {
             "environment": self.environment,
             "binance_mode": "DEMO_TRADING",
@@ -244,17 +360,14 @@ class BinanceTestnetGateway:
         client_order_id: str,
         confirm: str | None,
     ) -> dict:
-        """Call Binance `/fapi/v1/order/test`; validates signature but creates no order."""
         self._require_credentials()
         self._confirm(confirm, "TESTNET_ORDER_TEST")
         side_value = self._validate_side(side)
         client_id = self._validate_client_order_id(client_order_id)
         preview = self._preview(symbol, target_notional_usdt)
         resolved = preview["symbol"]
-        market = self.exchange.market(resolved)
-        raw_symbol = market.get("id") or resolved.replace("/", "").split(":", 1)[0]
+        raw_symbol = self._raw_symbol(self.exchange, resolved)
         quantity = self.exchange.amount_to_precision(resolved, preview["quantity"])
-
         endpoint = getattr(self.exchange, "fapiPrivatePostOrderTest", None)
         if endpoint is None:
             raise RuntimeError("installed CCXT build does not expose Binance Futures order/test endpoint")
@@ -286,26 +399,64 @@ class BinanceTestnetGateway:
         client_order_id: str,
         confirm: str | None,
     ) -> dict:
-        """Place a virtual-money MARKET order on Binance USD-M Demo/Testnet only."""
+        """Place one idempotent virtual-money MARKET order on Binance Demo."""
         self._require_credentials()
         self._confirm(confirm, "PLACE_TESTNET_ORDER")
         side_value = self._validate_side(side)
         client_id = self._validate_client_order_id(client_order_id)
         preview = self._preview(symbol, target_notional_usdt)
         resolved = preview["symbol"]
-        order = self.exchange.create_order(
-            resolved,
-            "market",
-            side_value.lower(),
-            preview["quantity"],
-            None,
-            {"newClientOrderId": client_id},
-        )
+        self.execution_account_preflight(symbol=resolved)
+
+        existing = self.fetch_order_by_client_id(symbol=resolved, client_order_id=client_id)
+        if existing is not None:
+            self._assert_existing_order_identity(existing, client_id=client_id, side=side_value)
+            return {
+                "ok": True,
+                "environment": self.environment,
+                "binance_mode": "DEMO_TRADING",
+                "virtual_money_only": True,
+                "idempotent_replay": True,
+                "recovered_after_ambiguous_create": False,
+                "order": existing,
+            }
+
+        try:
+            order = self.exchange.create_order(
+                resolved,
+                "market",
+                side_value.lower(),
+                preview["quantity"],
+                None,
+                {"newClientOrderId": client_id},
+            )
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as exc:
+            recovered = self._reconcile_client_order_after_ambiguous_create(
+                symbol=resolved,
+                client_order_id=client_id,
+            )
+            if recovered is not None:
+                self._assert_existing_order_identity(recovered, client_id=client_id, side=side_value)
+                return {
+                    "ok": True,
+                    "environment": self.environment,
+                    "binance_mode": "DEMO_TRADING",
+                    "virtual_money_only": True,
+                    "idempotent_replay": False,
+                    "recovered_after_ambiguous_create": True,
+                    "order": recovered,
+                }
+            raise AmbiguousDemoOrderState(
+                f"AMBIGUOUS_ORDER_STATE client_order_id={client_id}; create was not retried; reconcile before any new order"
+            ) from exc
+
         return {
             "ok": True,
             "environment": self.environment,
             "binance_mode": "DEMO_TRADING",
             "virtual_money_only": True,
+            "idempotent_replay": False,
+            "recovered_after_ambiguous_create": False,
             "order": self._safe_order(order),
         }
 
@@ -328,16 +479,29 @@ class BinanceTestnetGateway:
         confirm: str | None,
         client_order_id: str,
     ) -> dict:
-        """Close one one-way-mode Demo/Testnet position with a reduce-only MARKET order."""
+        """Close one one-way Demo position with an idempotent reduce-only MARKET order."""
         self._require_credentials()
         self._confirm(confirm, "CLOSE_TESTNET_POSITION")
         client_id = self._validate_client_order_id(client_order_id)
         resolved = self.market.resolve_symbol(symbol)
+        self.execution_account_preflight(symbol=resolved)
+
+        existing = self.fetch_order_by_client_id(symbol=resolved, client_order_id=client_id)
+        if existing is not None:
+            return {
+                "ok": True,
+                "environment": self.environment,
+                "binance_mode": "DEMO_TRADING",
+                "virtual_money_only": True,
+                "reduce_only": True,
+                "idempotent_replay": True,
+                "order": existing,
+            }
+
         positions = self.exchange.fetch_positions([resolved])
         active = [p for p in positions or [] if abs(float(p.get("contracts") or 0.0)) > 0]
         if len(active) != 1:
             raise RuntimeError(f"expected exactly one active Testnet position for {resolved}, found {len(active)}")
-
         position = active[0]
         contracts = abs(float(position.get("contracts") or 0.0))
         position_side = str(position.get("side") or "").lower()
@@ -345,21 +509,61 @@ class BinanceTestnetGateway:
             raise RuntimeError("cannot determine Testnet position side")
         close_side = "sell" if position_side == "long" else "buy"
         quantity = float(self.exchange.amount_to_precision(resolved, contracts))
-        order = self.exchange.create_order(
-            resolved,
-            "market",
-            close_side,
-            quantity,
-            None,
-            {"reduceOnly": True, "newClientOrderId": client_id},
-        )
+        try:
+            order = self.exchange.create_order(
+                resolved,
+                "market",
+                close_side,
+                quantity,
+                None,
+                {"reduceOnly": True, "newClientOrderId": client_id},
+            )
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as exc:
+            recovered = self._reconcile_client_order_after_ambiguous_create(
+                symbol=resolved,
+                client_order_id=client_id,
+            )
+            if recovered is not None:
+                return {
+                    "ok": True,
+                    "environment": self.environment,
+                    "binance_mode": "DEMO_TRADING",
+                    "virtual_money_only": True,
+                    "reduce_only": True,
+                    "idempotent_replay": False,
+                    "recovered_after_ambiguous_create": True,
+                    "order": recovered,
+                }
+            raise AmbiguousDemoOrderState(
+                f"AMBIGUOUS_CLOSE_STATE client_order_id={client_id}; close was not retried; reconcile before any new order"
+            ) from exc
         return {
             "ok": True,
             "environment": self.environment,
             "binance_mode": "DEMO_TRADING",
             "virtual_money_only": True,
             "reduce_only": True,
+            "idempotent_replay": False,
+            "recovered_after_ambiguous_create": False,
             "order": self._safe_order(order),
+        }
+
+    @staticmethod
+    def _safe_raw_order(order: dict | None) -> dict:
+        order = order or {}
+        return {
+            "id": str(order.get("orderId") or order.get("id") or "") or None,
+            "client_order_id": order.get("clientOrderId") or order.get("client_order_id"),
+            "symbol": order.get("symbol"),
+            "type": order.get("type"),
+            "side": order.get("side"),
+            "status": order.get("status"),
+            "amount": float(order.get("origQty") or order.get("amount") or 0.0),
+            "filled": float(order.get("executedQty") or order.get("filled") or 0.0),
+            "remaining": None,
+            "average": float(order.get("avgPrice") or order.get("average") or 0.0) or None,
+            "price": float(order.get("price") or 0.0) or None,
+            "timestamp": order.get("updateTime") or order.get("time") or order.get("timestamp"),
         }
 
     @staticmethod

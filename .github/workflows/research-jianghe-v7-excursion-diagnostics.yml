@@ -16,15 +16,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: 2023-Q1
+          - label: 2020
+            start: 2020-01-01T00:00:00Z
+            end: 2021-01-01T00:00:00Z
+          - label: 2021
+            start: 2021-01-01T00:00:00Z
+            end: 2022-01-01T00:00:00Z
+          - label: 2022
+            start: 2022-01-01T00:00:00Z
+            end: 2023-01-01T00:00:00Z
+          - label: 2023
             start: 2023-01-01T00:00:00Z
-            end: 2023-04-01T00:00:00Z
-          - label: 2024-Q1
+            end: 2024-01-01T00:00:00Z
+          - label: 2024
             start: 2024-01-01T00:00:00Z
-            end: 2024-04-01T00:00:00Z
-          - label: 2026-Q1
-            start: 2026-01-01T00:00:00Z
-            end: 2026-04-01T00:00:00Z
+            end: 2025-01-01T00:00:00Z
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

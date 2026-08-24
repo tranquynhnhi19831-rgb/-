@@ -7,7 +7,9 @@ from config import (
     HARD_MAX_DAILY_LOSS,
     HARD_MAX_LEVERAGE,
     HARD_MAX_RISK_PER_TRADE,
+    INITIAL_TRADING_UNIVERSE,
     REFERENCE_CAPITAL_USDT,
+    UNIVERSE_AS_OF_UTC,
 )
 from exchange.testnet_gateway import BinanceTestnetGateway, TestnetCredentials
 from models.config_model import ConfigModel
@@ -19,13 +21,7 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 def _purge_legacy_binance_secrets(cfg: ConfigModel, db: Session) -> None:
-    """Remove legacy DB-persisted Binance credentials.
-
-    S7 private Binance Demo credentials are SERVER_ENV_ONLY. Keeping a second
-    credential copy in SQLite creates ambiguity and unnecessary secret-at-rest
-    exposure, so any historical values are erased when config is accessed.
-    """
-
+    """Remove legacy DB-persisted Binance credentials."""
     if cfg.binance_api_key or cfg.binance_secret:
         cfg.binance_api_key = ""
         cfg.binance_secret = ""
@@ -34,7 +30,6 @@ def _purge_legacy_binance_secrets(cfg: ConfigModel, db: Session) -> None:
 
 def _enforce_s7_mode(cfg: ConfigModel, db: Session) -> None:
     """Fail closed on all legacy Live-mode flags while the system is in S7."""
-
     changed = False
     if cfg.testnet is not True:
         cfg.testnet = True
@@ -44,6 +39,10 @@ def _enforce_s7_mode(cfg: ConfigModel, db: Session) -> None:
         changed = True
     if cfg.live_confirmed:
         cfg.live_confirmed = False
+        changed = True
+    fixed_symbols = ",".join(INITIAL_TRADING_UNIVERSE)
+    if cfg.enabled_symbols != fixed_symbols:
+        cfg.enabled_symbols = fixed_symbols
         changed = True
     if changed:
         db.commit()
@@ -56,7 +55,7 @@ def _ensure_config(db: Session) -> ConfigModel:
         _enforce_s7_mode(cfg, db)
         return cfg
     d = DEFAULT_CONFIG.model_dump()
-    cfg = ConfigModel(**{**d, "enabled_symbols": ",".join(d["enabled_symbols"])})
+    cfg = ConfigModel(**{**d, "enabled_symbols": ",".join(INITIAL_TRADING_UNIVERSE)})
     cfg.binance_api_key = ""
     cfg.binance_secret = ""
     cfg.testnet = True
@@ -73,7 +72,6 @@ def _secret_value(payload: dict, key: str, current: str) -> str:
     if value is None:
         return current
     text = str(value)
-    # Never persist the masked value returned by GET /api/config.
     if "*" in text:
         return current
     return text
@@ -83,7 +81,6 @@ def _secret_value(payload: dict, key: str, current: str) -> str:
 def get_config(db: Session = Depends(get_db)):
     cfg = _ensure_config(db)
     return {
-        # Binance credentials intentionally never come from this config model.
         "binance_api_key": "",
         "binance_secret": "",
         "binance_credentials_source": "SERVER_ENV_ONLY",
@@ -92,6 +89,9 @@ def get_config(db: Session = Depends(get_db)):
         "dry_run": True,
         "live_confirmed": False,
         "s7_mode_locked": True,
+        "universe_locked": True,
+        "universe_as_of_utc": UNIVERSE_AS_OF_UTC,
+        "universe_policy": "TOP_7_NON_STABLE_CRYPTO_BY_MARKET_CAP_FIXED_FOR_INITIAL_PHASE",
         "margin_mode": cfg.margin_mode,
         "default_leverage": min(cfg.default_leverage, HARD_MAX_LEVERAGE),
         "max_leverage": min(cfg.max_leverage, HARD_MAX_LEVERAGE),
@@ -101,7 +101,7 @@ def get_config(db: Session = Depends(get_db)):
         "max_trades_per_day": cfg.max_trades_per_day,
         "max_open_positions": cfg.max_open_positions,
         "max_consecutive_losses": cfg.max_consecutive_losses,
-        "enabled_symbols": [s for s in cfg.enabled_symbols.split(",") if s],
+        "enabled_symbols": list(INITIAL_TRADING_UNIVERSE),
         "allowed_symbols": ALLOWED_SYMBOLS,
         "reference_capital_usdt": REFERENCE_CAPITAL_USDT,
         "execution_status": "S7_LOCAL_PAPER_AND_BINANCE_DEMO_VALIDATION",
@@ -111,7 +111,6 @@ def get_config(db: Session = Depends(get_db)):
 @router.post("")
 def save_config(payload: dict, db: Session = Depends(get_db)):
     cfg = _ensure_config(db)
-    enabled_symbols = [s for s in payload.get("enabled_symbols", []) if s in ALLOWED_SYMBOLS]
 
     max_leverage = max(
         1,
@@ -123,7 +122,6 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
     )
 
     updates = {
-        # S7 security locks: browser/admin config cannot enable Mainnet semantics.
         "binance_api_key": "",
         "binance_secret": "",
         "testnet": True,
@@ -148,7 +146,7 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
         "max_trades_per_day": max(1, min(int(payload.get("max_trades_per_day", 3)), 5)),
         "max_open_positions": 1,
         "max_consecutive_losses": 3,
-        "enabled_symbols": ",".join(enabled_symbols or ["BTC/USDT"]),
+        "enabled_symbols": ",".join(INITIAL_TRADING_UNIVERSE),
     }
 
     for key, value in updates.items():
@@ -158,12 +156,13 @@ def save_config(payload: dict, db: Session = Depends(get_db)):
         "ok": True,
         "binance_credentials_source": "SERVER_ENV_ONLY",
         "s7_mode_locked": True,
+        "universe_locked": True,
+        "enabled_symbols": list(INITIAL_TRADING_UNIVERSE),
     }
 
 
 @router.post("/test-binance")
 def test_binance(payload: dict, db: Session = Depends(get_db)):
-    """Compatibility route: use the env-only Binance Demo private health check."""
     _ensure_config(db)
     try:
         result = BinanceTestnetGateway(TestnetCredentials.from_env()).authenticated_health()
@@ -174,7 +173,6 @@ def test_binance(payload: dict, db: Session = Depends(get_db)):
 
 @router.post("/binance-order-preview")
 def binance_order_preview(payload: dict, db: Session = Depends(get_db)):
-    """Preview a Demo-valid quantity; this endpoint never places an order."""
     _ensure_config(db)
     symbol = payload.get("symbol", "ETH/USDT")
     if symbol not in ALLOWED_SYMBOLS:

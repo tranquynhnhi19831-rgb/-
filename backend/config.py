@@ -6,15 +6,23 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "trading.db"
 DB_URL = f"sqlite:///{DB_PATH}"
 
-ALLOWED_SYMBOLS = [
+# Initial production research universe, fixed in code for reproducibility.
+# Source snapshot: CoinMarketCap 2026-08-24 market-cap ranking. Stablecoins are
+# excluded because USDT is our quote/margin asset and stablecoin directional
+# futures are not part of the Jianghe strategy universe. The seven assets are
+# also expected to be available as Binance USDⓈ-M perpetuals; runtime exchange
+# preflight must still verify contract status before any order path is enabled.
+UNIVERSE_AS_OF_UTC = "2026-08-24"
+INITIAL_TRADING_UNIVERSE = (
     "BTC/USDT",
     "ETH/USDT",
-    "SOL/USDT",
     "BNB/USDT",
-    "DOGE/USDT",
     "XRP/USDT",
-    "ARB/USDT",
-]
+    "SOL/USDT",
+    "TRX/USDT",
+    "HYPE/USDT",
+)
+ALLOWED_SYMBOLS = list(INITIAL_TRADING_UNIVERSE)
 
 # v1.1 small-account baseline. These are safety defaults, not claims of an
 # optimal strategy. Backtests and paper/testnet results should decide whether
@@ -44,7 +52,7 @@ class AppConfig(BaseModel):
     max_trades_per_day: int = 3
     max_open_positions: int = 1
     max_consecutive_losses: int = 3
-    enabled_symbols: list[str] = Field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
+    enabled_symbols: list[str] = Field(default_factory=lambda: list(INITIAL_TRADING_UNIVERSE))
 
 
 DEFAULT_CONFIG = AppConfig()

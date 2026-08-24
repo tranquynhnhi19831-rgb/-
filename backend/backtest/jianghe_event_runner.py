@@ -50,6 +50,11 @@ def generate_event_pullback_signals_fast(
     visible. Lower-timeframe phases are inferred from confirmed swings inside the
     execution window; `find_confirmed_swings` itself requires right-side bars, so
     an execution pivot cannot be used before it is confirmed.
+
+    A confirmed pullback swing is treated as one structural event. Once a signal
+    has been emitted for that absolute execution-bar anchor, later trigger bars
+    from the same swing cannot create a duplicate trade. A new confirmed swing is
+    required before the runner may emit another event signal in that direction.
     """
 
     cfg = config or EventPullbackRunnerConfig()
@@ -64,6 +69,7 @@ def generate_event_pullback_signals_fast(
 
     signals: list[CandidateSignal] = []
     last_emitted: dict[str, int] = {}
+    seen_events: set[tuple[str, int]] = set()
     last_ctx_end = -1
     structure: StructureSnapshot | None = None
 
@@ -87,6 +93,13 @@ def generate_event_pullback_signals_fast(
         evaluation = evaluate_event_pullback_from_structure(structure, ex, cfg.event_config)
         if not evaluation.candidate or evaluation.side is None or evaluation.invalidation_reference is None:
             continue
+        if evaluation.pullback_end_index is None:
+            continue
+
+        event_anchor = ex_start + int(evaluation.pullback_end_index)
+        event_key = (evaluation.side, event_anchor)
+        if event_key in seen_events:
+            continue
 
         previous = last_emitted.get(evaluation.side)
         if previous is not None and i - previous <= cfg.signal_cooldown_bars:
@@ -94,6 +107,7 @@ def generate_event_pullback_signals_fast(
 
         metadata = evaluation.to_dict()
         metadata["runner_context_efficiency"] = float(structure.trend_efficiency)
+        metadata["event_pullback_index_abs"] = int(event_anchor)
         signals.append(
             CandidateSignal(
                 index=i,
@@ -105,6 +119,7 @@ def generate_event_pullback_signals_fast(
                 metadata=metadata,
             )
         )
+        seen_events.add(event_key)
         last_emitted[evaluation.side] = i
 
     return signals

@@ -18,8 +18,8 @@ def test_initial_universe_is_fixed_top_seven_non_stable_assets():
     assert INITIAL_TRADING_UNIVERSE == (
         "BTC/USDT",
         "ETH/USDT",
-        "BNB/USDT",
         "XRP/USDT",
+        "BNB/USDT",
         "SOL/USDT",
         "TRX/USDT",
         "HYPE/USDT",

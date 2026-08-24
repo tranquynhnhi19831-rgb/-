@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import desc, func
 
-from config import DEFAULT_CONFIG, REFERENCE_CAPITAL_USDT
+from config import DEFAULT_CONFIG, INITIAL_TRADING_UNIVERSE, REFERENCE_CAPITAL_USDT
 from models.account_snapshot import AccountSnapshot
 from models.config_model import ConfigModel
 from models.position import Position
@@ -15,6 +15,12 @@ from risk.risk_manager import RiskContext, RiskManager
 from services.account_service import latest_account, realized_pnl_for_utc_day, trades_opened_on_utc_day
 from services.log_service import add_log
 from services.paper_scenarios import scenario_for_index
+from services.trade_audit_service import (
+    add_trade_decision,
+    decision_id_for_trade,
+    new_cycle_id,
+    new_decision_id,
+)
 
 
 class TradingEngine:
@@ -33,10 +39,14 @@ class TradingEngine:
     @staticmethod
     def _ensure_config(db) -> ConfigModel:
         cfg = db.query(ConfigModel).first()
+        fixed_symbols = ",".join(INITIAL_TRADING_UNIVERSE)
         if cfg:
+            if cfg.enabled_symbols != fixed_symbols:
+                cfg.enabled_symbols = fixed_symbols
+                db.commit()
             return cfg
         d = DEFAULT_CONFIG.model_dump()
-        cfg = ConfigModel(**{**d, "enabled_symbols": ",".join(d["enabled_symbols"])})
+        cfg = ConfigModel(**{**d, "enabled_symbols": fixed_symbols})
         db.add(cfg)
         db.commit()
         db.refresh(cfg)
@@ -56,7 +66,7 @@ class TradingEngine:
             "max_trades_per_day": cfg.max_trades_per_day,
             "max_open_positions": cfg.max_open_positions,
             "max_consecutive_losses": cfg.max_consecutive_losses,
-            "enabled_symbols": [s.strip() for s in cfg.enabled_symbols.split(",") if s.strip()],
+            "enabled_symbols": list(INITIAL_TRADING_UNIVERSE),
         }
 
     @staticmethod
@@ -98,20 +108,17 @@ class TradingEngine:
         stored_peak = db.query(func.max(AccountSnapshot.equity)).scalar()
         return max(REFERENCE_CAPITAL_USDT, float(stored_peak or 0.0))
 
-    def _close_existing_paper_position(self, db, position: Position) -> dict:
+    def _close_existing_paper_position(self, db, position: Position, cycle_id: str) -> dict:
         trade = self._latest_open_trade(db, position.symbol)
         if trade is None:
             position.is_open = False
             db.commit()
             return {"action": "RECONCILE_ORPHAN_POSITION", "symbol": position.symbol}
 
-        # Capture today's realized ledger PnL while this trade is still open.
-        # This prevents yesterday's snapshot.daily_pnl from leaking into a new
-        # UTC day and avoids double-counting the trade being closed below.
         daily_pnl_before = realized_pnl_for_utc_day(db)
 
-        # Alternate a target exit and a stop exit so the local dashboard can
-        # exercise both winning and losing accounting paths deterministically.
+        # Alternate target/stop outcomes only for deterministic engineering
+        # validation. Historical/real-time strategy exits use market data.
         use_target = (trade.id % 2) == 1
         exit_price = float(trade.take_profit if use_target else trade.stop_loss)
         entry = float(trade.entry_price)
@@ -145,6 +152,35 @@ class TradingEngine:
             )
         )
         db.commit()
+
+        decision_id = decision_id_for_trade(db, trade.id)
+        if decision_id:
+            add_trade_decision(
+                db,
+                cycle_id=cycle_id,
+                decision_id=decision_id,
+                symbol=position.symbol,
+                setup="PAPER_EXIT",
+                side=str(trade.side),
+                stage="EXIT",
+                outcome="CLOSED",
+                candidate=True,
+                selected=True,
+                entry_reference=entry,
+                stop_reference=float(trade.stop_loss),
+                target_reference=float(trade.take_profit),
+                quantity=qty,
+                reason_codes=["TARGET" if use_target else "STOP"],
+                evidence={
+                    "exit_price": exit_price,
+                    "gross_pnl_usdt": gross,
+                    "fee_usdt": fee,
+                    "net_pnl_usdt": net,
+                    "source": "DETERMINISTIC_PAPER_SCENARIO",
+                },
+                trade_id=trade.id,
+            )
+
         add_log(
             db,
             f"PAPER平仓 {position.symbol} {trade.side} exit={exit_price:.4f} netPnL={net:.4f}U",
@@ -164,9 +200,11 @@ class TradingEngine:
             "equity_peak_usdt": peak_equity,
             "drawdown_fraction": drawdown,
             "daily_pnl_usdt": daily_pnl,
+            "decision_id": decision_id,
         }
 
     async def start_once(self, db) -> dict:
+        cycle_id = new_cycle_id("paper")
         cfg = self._ensure_config(db)
         cfg_dict = self._config_dict(cfg)
 
@@ -181,7 +219,7 @@ class TradingEngine:
             .first()
         )
         if open_position is not None:
-            return self._close_existing_paper_position(db, open_position)
+            return self._close_existing_paper_position(db, open_position, cycle_id)
 
         account = latest_account(db)
         daily_pnl = realized_pnl_for_utc_day(db)
@@ -191,9 +229,11 @@ class TradingEngine:
         equity = float(account["equity"])
         day_start_equity = max(0.0, equity - daily_pnl)
 
-        enabled = cfg_dict["enabled_symbols"] or ["BTC/USDT"]
-        symbol = enabled[0]
+        # Synthetic Paper rotates through the fixed universe so engineering
+        # validation does not silently exercise BTC only. The future autonomous
+        # scanner evaluates all seven concurrently from real closed candles.
         historical_trade_count = db.query(Trade).count()
+        symbol = INITIAL_TRADING_UNIVERSE[historical_trade_count % len(INITIAL_TRADING_UNIVERSE)]
         scenario = scenario_for_index(historical_trade_count, symbol)
         evaluation = scenario.evaluation
 
@@ -204,6 +244,7 @@ class TradingEngine:
                 "source": "DETERMINISTIC_PAPER_SCENARIO",
                 "setup": scenario.name,
                 "reason_codes": list(evaluation.reason_codes),
+                "cycle_id": cycle_id,
             }
 
         entry = float(evaluation.entry_reference)
@@ -211,6 +252,41 @@ class TradingEngine:
         stop_distance = abs(entry - stop)
         if stop_distance <= 0:
             raise RuntimeError("Paper candidate has invalid structural stop distance")
+
+        side = str(evaluation.side).upper()
+        direction = 1.0 if side == "LONG" else -1.0
+        take = entry + direction * stop_distance * 1.8
+        reason_codes = list(evaluation.reason_codes)
+        reason_text = f"PAPER:{scenario.name}; " + ",".join(reason_codes)
+        decision_id = new_decision_id()
+        evaluation_dict = evaluation.to_dict() if hasattr(evaluation, "to_dict") else {}
+
+        add_trade_decision(
+            db,
+            cycle_id=cycle_id,
+            decision_id=decision_id,
+            symbol=symbol,
+            setup=scenario.name,
+            side=side,
+            stage="CANDIDATE",
+            outcome="QUALIFIED",
+            candidate=True,
+            selected=True,
+            score=1.0,
+            entry_reference=entry,
+            stop_reference=stop,
+            target_reference=take,
+            reason_codes=reason_codes,
+            evidence={
+                "source": "DETERMINISTIC_PAPER_SCENARIO",
+                "evaluation": evaluation_dict,
+                "equity_usdt": equity,
+                "daily_pnl_usdt": daily_pnl,
+                "trades_today": trades_today,
+                "open_positions": open_positions,
+                "consecutive_losses": consecutive_losses,
+            },
+        )
 
         leverage = int(cfg.default_leverage)
         ctx = RiskContext(
@@ -221,7 +297,7 @@ class TradingEngine:
             consecutive_losses=consecutive_losses,
             day_start_equity=day_start_equity,
         )
-        decision = self.risk.evaluate(
+        risk_decision = self.risk.evaluate(
             cfg_dict,
             ctx,
             symbol,
@@ -229,17 +305,46 @@ class TradingEngine:
             leverage=leverage,
             margin_ratio=min(0.05, float(cfg.max_margin_per_trade)),
         )
-        if not decision.allowed:
-            db.add(RiskEvent(rule="paper_risk_check", symbol=symbol, action="blocked", reason=decision.message))
+        if not risk_decision.allowed:
+            db.add(RiskEvent(rule="paper_risk_check", symbol=symbol, action="blocked", reason=risk_decision.message))
             db.commit()
-            add_log(db, f"PAPER风控拦截 {symbol}: {decision.code} {decision.message}", "WARNING", "paper")
+            add_trade_decision(
+                db,
+                cycle_id=cycle_id,
+                decision_id=decision_id,
+                symbol=symbol,
+                setup=scenario.name,
+                side=side,
+                stage="RISK",
+                outcome="BLOCKED",
+                candidate=True,
+                selected=True,
+                score=1.0,
+                entry_reference=entry,
+                stop_reference=stop,
+                target_reference=take,
+                reason_codes=reason_codes,
+                evidence={
+                    "equity_usdt": equity,
+                    "daily_pnl_usdt": daily_pnl,
+                    "trades_today": trades_today,
+                    "open_positions": open_positions,
+                    "consecutive_losses": consecutive_losses,
+                    "day_start_equity_usdt": day_start_equity,
+                },
+                risk_code=risk_decision.code,
+                risk_message=risk_decision.message,
+            )
+            add_log(db, f"PAPER风控拦截 {symbol}: {risk_decision.code} {risk_decision.message}", "WARNING", "paper")
             return {
                 "action": "RISK_BLOCKED",
                 "symbol": symbol,
-                "reason_code": decision.code,
-                "reason": decision.message,
+                "reason_code": risk_decision.code,
+                "reason": risk_decision.message,
                 "daily_pnl_usdt": daily_pnl,
                 "trades_today": trades_today,
+                "cycle_id": cycle_id,
+                "decision_id": decision_id,
             }
 
         risk_budget = self.risk.risk_budget_usdt(cfg_dict, equity)
@@ -250,13 +355,38 @@ class TradingEngine:
         if quantity <= 0:
             raise RuntimeError("Paper position size resolved to zero")
 
-        side = str(evaluation.side).upper()
-        direction = 1.0 if side == "LONG" else -1.0
-        take = entry + direction * stop_distance * 1.8
-        reason_codes = list(evaluation.reason_codes)
-        reason_text = f"PAPER:{scenario.name}; " + ",".join(reason_codes)
         actual_risk = stop_distance * quantity
         actual_notional = abs(entry * quantity)
+
+        add_trade_decision(
+            db,
+            cycle_id=cycle_id,
+            decision_id=decision_id,
+            symbol=symbol,
+            setup=scenario.name,
+            side=side,
+            stage="ORDER_INTENT",
+            outcome="READY",
+            candidate=True,
+            selected=True,
+            score=1.0,
+            entry_reference=entry,
+            stop_reference=stop,
+            target_reference=take,
+            quantity=quantity,
+            planned_risk_usdt=actual_risk,
+            planned_notional_usdt=actual_notional,
+            reason_codes=reason_codes,
+            evidence={
+                "source": "DETERMINISTIC_PAPER_SCENARIO",
+                "risk_budget_usdt": risk_budget,
+                "max_notional_usdt": max_notional,
+                "leverage": leverage,
+                "reward_risk": 1.8,
+            },
+            risk_code="OK",
+            risk_message="ok",
+        )
 
         db.add(
             Signal(
@@ -297,6 +427,38 @@ class TradingEngine:
             )
         )
         db.commit()
+        db.refresh(trade)
+
+        add_trade_decision(
+            db,
+            cycle_id=cycle_id,
+            decision_id=decision_id,
+            symbol=symbol,
+            setup=scenario.name,
+            side=side,
+            stage="FILL",
+            outcome="FILLED",
+            candidate=True,
+            selected=True,
+            score=1.0,
+            entry_reference=entry,
+            stop_reference=stop,
+            target_reference=take,
+            quantity=quantity,
+            planned_risk_usdt=actual_risk,
+            planned_notional_usdt=actual_notional,
+            reason_codes=reason_codes,
+            evidence={
+                "source": "LOCAL_PAPER",
+                "fill_price": entry,
+                "leverage": leverage,
+                "fee_estimate_usdt": abs(entry * quantity) * 0.0004,
+            },
+            risk_code="OK",
+            risk_message="ok",
+            trade_id=trade.id,
+        )
+
         add_log(
             db,
             f"PAPER开仓 {symbol} {side} setup={scenario.name} entry={entry:.4f} stop={stop:.4f} take={take:.4f}",
@@ -321,6 +483,8 @@ class TradingEngine:
             "daily_pnl_usdt": daily_pnl,
             "trades_today": trades_today,
             "reason_codes": reason_codes,
+            "cycle_id": cycle_id,
+            "decision_id": decision_id,
         }
 
 

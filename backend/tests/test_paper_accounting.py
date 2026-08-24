@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from models.database import Base
 from models.trade import Trade
 from services.account_service import (
+    consecutive_losses_for_utc_day,
     max_drawdown_from_equities,
     realized_pnl_for_utc_day,
     trades_opened_on_utc_day,
@@ -86,5 +87,63 @@ def test_daily_pnl_and_trade_count_reset_by_utc_day():
         assert realized_pnl_for_utc_day(db, date(2026, 8, 24)) == pytest.approx(0.50)
         assert trades_opened_on_utc_day(db, date(2026, 8, 23)) == 1
         assert trades_opened_on_utc_day(db, date(2026, 8, 24)) == 2
+    finally:
+        db.close()
+
+
+def test_consecutive_losses_are_scoped_to_realization_utc_day():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+
+    try:
+        db.add_all(
+            [
+                # Previous-day loss must never leak into the next UTC day.
+                Trade(
+                    symbol="BTC/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 23, 20, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 23, 21, 0, tzinfo=timezone.utc),
+                    pnl=-0.5,
+                ),
+                # Opened before midnight but realized after midnight: belongs to
+                # Aug 24 because cooldown is based on realized result time.
+                Trade(
+                    symbol="BTC/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 23, 23, 50, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 24, 0, 10, tzinfo=timezone.utc),
+                    pnl=-0.4,
+                ),
+                Trade(
+                    symbol="ETH/USDT",
+                    side="SHORT",
+                    open_time=datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 24, 1, 20, tzinfo=timezone.utc),
+                    pnl=0.3,
+                ),
+                Trade(
+                    symbol="SOL/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 24, 2, 20, tzinfo=timezone.utc),
+                    pnl=-0.2,
+                ),
+                Trade(
+                    symbol="XRP/USDT",
+                    side="LONG",
+                    open_time=datetime(2026, 8, 24, 3, 0, tzinfo=timezone.utc),
+                    close_time=datetime(2026, 8, 24, 3, 20, tzinfo=timezone.utc),
+                    pnl=-0.2,
+                ),
+            ]
+        )
+        db.commit()
+
+        assert consecutive_losses_for_utc_day(db, date(2026, 8, 23)) == 1
+        assert consecutive_losses_for_utc_day(db, date(2026, 8, 24)) == 2
+        assert consecutive_losses_for_utc_day(db, date(2026, 8, 25)) == 0
     finally:
         db.close()

@@ -5,6 +5,10 @@ on:
     branches: ["codex/jianghe-s7-paper-engine"]
   workflow_dispatch:
 
+concurrency:
+  group: research-jianghe-v2-ab-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ab-window:
     if: github.head_ref == 'codex/jianghe-strategy-v2-quality'

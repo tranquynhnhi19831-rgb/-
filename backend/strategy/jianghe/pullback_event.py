@@ -190,9 +190,14 @@ def evaluate_event_pullback_from_structure(
     impulse_start = int(p0.index)
     impulse_end = int(p1.index)
     pullback_end = int(p2.index)
+
+    # Pivot bars belong to the leg that terminates at them. The next leg starts
+    # on the following bar. This avoids double-counting the large terminal
+    # impulse candle as part of the pullback and the pullback pivot as part of
+    # the re-acceleration segment.
     impulse_bars = impulse_end - impulse_start + 1
-    pullback_bars = pullback_end - impulse_end + 1
-    trigger_bars = len(df) - pullback_end
+    pullback_bars = pullback_end - impulse_end
+    trigger_bars = len(df) - pullback_end - 1
 
     phase_lengths_ok = (
         cfg.min_impulse_bars <= impulse_bars <= cfg.max_impulse_bars
@@ -217,8 +222,8 @@ def evaluate_event_pullback_from_structure(
         )
 
     impulse = df.iloc[impulse_start : impulse_end + 1]
-    pullback = df.iloc[impulse_end : pullback_end + 1]
-    trigger = df.iloc[pullback_end:]
+    pullback = df.iloc[impulse_end + 1 : pullback_end + 1]
+    trigger = df.iloc[pullback_end + 1 :]
     local_window = df.iloc[impulse_start:]
     atr = _atr(local_window)
 

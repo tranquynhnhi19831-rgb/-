@@ -9,6 +9,8 @@ class BacktestConfig:
     """Execution assumptions for deterministic research backtests.
 
     These are research/execution parameters, not Jianghe's claimed rules.
+    ``max_friction_to_planned_risk`` is opt-in so existing baselines remain
+    byte-for-byte comparable unless an experiment explicitly enables it.
     """
 
     initial_equity: float = 100.0
@@ -20,6 +22,7 @@ class BacktestConfig:
     leverage: float = 3.0
     max_margin_fraction: float = 0.10
     same_bar_policy: str = "STOP_FIRST"
+    max_friction_to_planned_risk: float | None = None
 
     def validate(self) -> None:
         if self.initial_equity <= 0:
@@ -38,6 +41,10 @@ class BacktestConfig:
             raise ValueError("max_margin_fraction must be in (0, 1]")
         if self.same_bar_policy not in {"STOP_FIRST", "TARGET_FIRST"}:
             raise ValueError("same_bar_policy must be STOP_FIRST or TARGET_FIRST")
+        if self.max_friction_to_planned_risk is not None and not (
+            0 < self.max_friction_to_planned_risk < 1
+        ):
+            raise ValueError("max_friction_to_planned_risk must be in (0, 1) or None")
 
 
 @dataclass(frozen=True)

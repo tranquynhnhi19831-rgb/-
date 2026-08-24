@@ -1,0 +1,43 @@
+name: research-jianghe-v2-ab
+
+on:
+  pull_request:
+    branches: ["codex/jianghe-s7-paper-engine"]
+  workflow_dispatch:
+
+concurrency:
+  group: research-jianghe-v2-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ab-window:
+    if: github.head_ref == 'codex/jianghe-strategy-v2-quality'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: 2023-Q1
+            start: 2023-01-01T00:00:00Z
+            end: 2023-04-01T00:00:00Z
+          - label: 2024-Q1
+            start: 2024-01-01T00:00:00Z
+            end: 2024-04-01T00:00:00Z
+          - label: 2026-Q1
+            start: 2026-01-01T00:00:00Z
+            end: 2026-04-01T00:00:00Z
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Run baseline vs v2 on ${{ matrix.label }}
+        env:
+          PYTHONPATH: backend
+        run: >-
+          python scripts/research_jianghe_v2_ab.py
+          --start ${{ matrix.start }}
+          --end ${{ matrix.end }}

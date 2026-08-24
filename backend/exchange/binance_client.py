@@ -32,7 +32,6 @@ class BinanceClient:
                 "options": options,
             }
         )
-        # CCXT requires sandbox mode to be enabled before any other call.
         if testnet:
             self.exchange.set_sandbox_mode(True)
 
@@ -57,6 +56,71 @@ class BinanceClient:
                 return raw
 
         raise ValueError(f"unsupported Binance USDT-M symbol: {symbol}")
+
+    def validate_usdm_universe(self, symbols) -> dict:
+        """Verify every configured symbol resolves to an active USDT perpetual.
+
+        The code-level market-cap universe is intentionally fixed for research
+        reproducibility, but exchange listings can change. This runtime check
+        prevents the scanner from silently operating with a partial universe.
+        """
+        markets = self.load_markets()
+        items = []
+        all_ok = True
+
+        for requested in symbols:
+            try:
+                resolved = self.resolve_symbol(requested)
+                market = markets[resolved]
+                info = market.get("info", {}) or {}
+                status = str(info.get("status") or "").upper()
+                active = market.get("active") is not False and status not in {
+                    "CLOSE",
+                    "DELIVERED",
+                    "PRE_DELIVERING",
+                    "DELIVERING",
+                    "SETTLING",
+                }
+                is_perpetual = bool(
+                    market.get("swap") is True
+                    or str(market.get("type") or "").lower() == "swap"
+                    or str(info.get("contractType") or "").upper() == "PERPETUAL"
+                )
+                quote_ok = str(market.get("quote") or "USDT").upper() == "USDT"
+                linear_ok = market.get("linear") is not False
+                ok = bool(active and is_perpetual and quote_ok and linear_ok)
+                all_ok = all_ok and ok
+                items.append(
+                    {
+                        "requested_symbol": requested,
+                        "resolved_symbol": resolved,
+                        "exchange_id": market.get("id"),
+                        "status": status or ("TRADING" if active else "UNKNOWN"),
+                        "active": bool(active),
+                        "perpetual": bool(is_perpetual),
+                        "linear": bool(linear_ok),
+                        "quote_usdt": bool(quote_ok),
+                        "ok": ok,
+                    }
+                )
+            except Exception as exc:
+                all_ok = False
+                items.append(
+                    {
+                        "requested_symbol": requested,
+                        "resolved_symbol": None,
+                        "exchange_id": None,
+                        "status": "UNAVAILABLE",
+                        "active": False,
+                        "perpetual": False,
+                        "linear": False,
+                        "quote_usdt": False,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+
+        return {"ok": all_ok, "count": len(items), "markets": items}
 
     @staticmethod
     def _filter(info: dict, filter_type: str) -> dict:
@@ -129,12 +193,10 @@ class BinanceClient:
         requested_quantity = target_notional_usdt / market_price
         normalized_quantity = normalize_order_quantity(requested_quantity, market_price, rules)
 
-        # Final formatting uses CCXT's exchange-specific precision helper.
         normalized_quantity = float(self.exchange.amount_to_precision(resolved, normalized_quantity))
         actual_notional = normalized_quantity * market_price
 
         if rules.min_notional and actual_notional + 1e-9 < rules.min_notional:
-            # Defensive second pass if the exchange precision helper truncated.
             normalized_quantity = normalize_order_quantity(
                 normalized_quantity + (rules.amount_step or normalized_quantity * 1e-9),
                 market_price,

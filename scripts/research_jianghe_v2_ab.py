@@ -6,11 +6,8 @@ import time
 
 from backtest.binance_vision import fetch_usdm_ohlcv_vision
 from backtest.engine import BacktestEngine
-from backtest.jianghe_runner import (
-    JiangheRunnerConfig,
-    generate_jianghe_signals_fast,
-    quality_first_v2_config,
-)
+from backtest.jianghe_research_fast import generate_jianghe_signals_research_fast
+from backtest.jianghe_runner import JiangheRunnerConfig, quality_first_v2_config
 from backtest.types import BacktestConfig
 
 
@@ -37,7 +34,7 @@ def _summary(result, signals, elapsed_s: float) -> dict:
 
 def _run(label, context, execution, runner_cfg):
     started = time.perf_counter()
-    signals = generate_jianghe_signals_fast(context, execution, runner_cfg)
+    signals = generate_jianghe_signals_research_fast(context, execution, runner_cfg)
     signal_elapsed = time.perf_counter() - started
     engine = BacktestEngine(
         BacktestConfig(
@@ -84,6 +81,7 @@ def main() -> None:
         "end": args.end,
         "context_timeframe": "15m",
         "execution_timeframe": "1m",
+        "research_runner": "SEMANTICS_PRESERVING_REGIME_SHORT_CIRCUIT",
         "assumptions": {
             "initial_equity": 100.0,
             "risk_per_trade": 0.005,

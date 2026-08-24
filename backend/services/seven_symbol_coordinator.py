@@ -30,17 +30,20 @@ async def _maybe_await(value):
 class SevenSymbolScanCoordinator:
     """Evaluate the fixed seven-symbol universe on every scan cycle.
 
-    Evaluation is concurrent so symbol ordering cannot decide who gets traded.
-    All qualified candidates are audited first, then one deterministic global
-    winner is selected. Execution remains a separate callback and must still
-    enforce RiskManager + exchange preflight before creating any order.
+    Synchronous evaluators (for example CCXT REST market-data reads) run in
+    worker threads so one slow symbol cannot serialize the whole universe scan.
+    Async evaluators run directly. All qualified candidates are audited before
+    deterministic global arbitration.
     """
 
     universe = INITIAL_TRADING_UNIVERSE
 
     async def scan_once(self, db, evaluator: Evaluator) -> ScanResult:
         async def evaluate(symbol: str):
-            return await _maybe_await(evaluator(symbol))
+            if inspect.iscoroutinefunction(evaluator):
+                return await evaluator(symbol)
+            value = await asyncio.to_thread(evaluator, symbol)
+            return await _maybe_await(value)
 
         evaluated = await asyncio.gather(*(evaluate(symbol) for symbol in self.universe))
         candidates = [item for item in evaluated if item is not None]
@@ -66,8 +69,7 @@ class SevenSymbolScanCoordinator:
         The default cadence is one minute. The real-time evaluator is responsible
         for exposing only fully closed 1m/15m/1h candles, preserving the no-
         lookahead convention used in backtests. This loop is infrastructure only;
-        S7 does not auto-start it until Demo market-data/execution acceptance is
-        complete.
+        S7 does not auto-start it until Paper/Demo acceptance is complete.
         """
         if cadence_seconds <= 0:
             raise ValueError("cadence_seconds must be > 0")

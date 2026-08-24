@@ -6,6 +6,7 @@ import pandas as pd
 
 from backtest.metrics import summarize, summarize_by_setup
 from backtest.types import BacktestConfig, BacktestResult, BacktestTrade, CandidateSignal
+from risk.economic_viability import assess_round_trip_economics
 
 REQUIRED_COLUMNS = {"open", "high", "low", "close"}
 
@@ -42,6 +43,8 @@ class BacktestEngine:
     - entry occurs no earlier than the next bar open;
     - risk sizing uses structural invalidation;
     - margin/notional is capped for the 100U profile;
+    - optional small-account economics gate skips trades where estimated two-sided
+      fees/slippage consume too much of the actual planned stop risk;
     - same-bar stop/target ambiguity defaults to STOP_FIRST;
     - adverse gaps through a stop fill at the bar open, not the ideal stop price;
     - fees, adverse slippage and optional funding are deducted.
@@ -59,6 +62,7 @@ class BacktestEngine:
         equity_curve: list[float] = [equity]
         trades: list[BacktestTrade] = []
         skipped = 0
+        economic_skips = 0
         next_free_index = 0
 
         ordered = sorted(signals, key=lambda s: s.index)
@@ -88,6 +92,22 @@ class BacktestEngine:
             if quantity <= 0:
                 skipped += 1
                 continue
+
+            if cfg.max_friction_to_planned_risk is not None:
+                economics = assess_round_trip_economics(
+                    entry_price=entry,
+                    stop_price=stop,
+                    quantity=quantity,
+                    side=signal.side,
+                    reward_risk=cfg.reward_risk,
+                    fee_rate=cfg.fee_rate,
+                    slippage_bps=cfg.slippage_bps,
+                    max_friction_to_risk=cfg.max_friction_to_planned_risk,
+                )
+                if not economics.allowed:
+                    skipped += 1
+                    economic_skips += 1
+                    continue
 
             target = (
                 entry + cfg.reward_risk * stop_distance
@@ -191,6 +211,7 @@ class BacktestEngine:
 
         metrics = summarize(trades, equity_curve, cfg.initial_equity)
         metrics["skipped_signals"] = skipped
+        metrics["economic_skips"] = economic_skips
         metrics["setup_count"] = len({t.setup for t in trades})
         metrics["by_setup"] = summarize_by_setup(trades)
 

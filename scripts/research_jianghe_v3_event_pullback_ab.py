@@ -8,7 +8,8 @@ from dataclasses import replace
 from backtest.binance_vision import fetch_usdm_ohlcv_vision
 from backtest.engine import BacktestEngine
 from backtest.jianghe_event_runner import generate_event_pullback_signals_fast
-from backtest.jianghe_runner import SETUP_PULLBACK, generate_jianghe_signals_fast, quality_first_v2_config
+from backtest.jianghe_research_fast import generate_jianghe_signals_research_fast
+from backtest.jianghe_runner import SETUP_PULLBACK, quality_first_v2_config
 from backtest.types import BacktestConfig
 
 
@@ -64,7 +65,7 @@ def main() -> None:
     fixed_cfg = replace(quality_first_v2_config(), enabled_setups=(SETUP_PULLBACK,))
 
     started = time.perf_counter()
-    fixed_signals = generate_jianghe_signals_fast(context, execution, fixed_cfg)
+    fixed_signals = generate_jianghe_signals_research_fast(context, execution, fixed_cfg)
     fixed_result = _engine().run(execution, fixed_signals)
     fixed = _summary("V2_FIXED_PULLBACK", fixed_signals, fixed_result, time.perf_counter() - started)
 
@@ -80,6 +81,7 @@ def main() -> None:
         "context_timeframe": "15m",
         "execution_timeframe": "1m",
         "change_under_test": "FIXED_PHASE_LENGTHS_VS_CONFIRMED_SWING_EVENT_PHASES",
+        "fixed_runner": "SEMANTICS_PRESERVING_REGIME_SHORT_CIRCUIT",
         "assumptions": {
             "initial_equity": 100.0,
             "risk_per_trade": 0.005,

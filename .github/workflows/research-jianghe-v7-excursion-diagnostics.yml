@@ -1,0 +1,49 @@
+name: research-jianghe-v7-excursion-diagnostics
+
+on:
+  pull_request:
+    branches: ["codex/jianghe-v5-scored-economics"]
+  workflow_dispatch:
+
+concurrency:
+  group: research-jianghe-v7-excursion-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  excursion-window:
+    if: github.head_ref == 'codex/jianghe-v7-excursion-diagnostics'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: 2020
+            start: 2020-01-01T00:00:00Z
+            end: 2021-01-01T00:00:00Z
+          - label: 2021
+            start: 2021-01-01T00:00:00Z
+            end: 2022-01-01T00:00:00Z
+          - label: 2022
+            start: 2022-01-01T00:00:00Z
+            end: 2023-01-01T00:00:00Z
+          - label: 2023
+            start: 2023-01-01T00:00:00Z
+            end: 2024-01-01T00:00:00Z
+          - label: 2024
+            start: 2024-01-01T00:00:00Z
+            end: 2025-01-01T00:00:00Z
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Diagnose V5 excursions on ${{ matrix.label }}
+        env:
+          PYTHONPATH: backend
+        run: >-
+          python scripts/diagnose_jianghe_v7_excursions.py
+          --start ${{ matrix.start }}
+          --end ${{ matrix.end }}

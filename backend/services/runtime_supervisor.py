@@ -75,6 +75,7 @@ class RuntimeSupervisor:
             "lease_expires_at": row.lease_expires_at,
             "heartbeat_at": row.heartbeat_at,
             "last_cycle_id": row.last_cycle_id,
+            "last_execution_close_at": row.last_execution_close_at,
             "last_error": row.last_error,
         }
 
@@ -83,6 +84,8 @@ class RuntimeSupervisor:
         row.kill_switch = bool(enabled)
         if enabled and reason:
             row.last_error = reason
+        if not enabled:
+            row.last_error = ""
         db.commit()
         add_log(
             db,
@@ -211,7 +214,7 @@ class RuntimeSupervisor:
             if abs(float(p.quantity or 0.0) - float(t.quantity or 0.0)) > 1e-12:
                 errors.append("OPEN_POSITION_TRADE_QUANTITY_MISMATCH")
         if positions and pending:
-            errors.append("OPEN_POSITION_AND_PENDING_INTENT coexist".replace(" ", "_"))
+            errors.append("OPEN_POSITION_AND_PENDING_INTENT")
 
         result = LedgerCheck(
             ok=not errors,

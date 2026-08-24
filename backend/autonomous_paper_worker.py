@@ -39,6 +39,13 @@ async def _main() -> None:
                 pass
 
     runtime = AutonomousPaperRuntime()
+
+    # Fail closed before acquiring the long-running worker lease. Paper is
+    # required to monitor exactly the fixed seven-symbol universe; silently
+    # degrading to six symbols because one contract is missing/inactive would
+    # change both strategy opportunity set and arbitration semantics.
+    runtime.provider.require_universe_health()
+
     await runtime.run_forever(db_factory=SessionLocal, stop_event=stop_event)
 
 

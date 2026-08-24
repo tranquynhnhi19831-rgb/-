@@ -29,6 +29,8 @@ class ScoredMultiTimeframeRunnerConfig:
     min_macro_efficiency: float = 0.18
     min_context_efficiency: float = 0.22
     min_quality_score: float = 0.55
+    execution_timeframe_label: str = "1m"
+    setup_version: str = "V5_SCORED_MTF_PULLBACK"
     event_config: EventPullbackConfig = field(default_factory=EventPullbackConfig)
 
     def alignment_config(self) -> MultiTimeframeRunnerConfig:
@@ -50,6 +52,10 @@ class ScoredMultiTimeframeRunnerConfig:
         self.alignment_config().validate()
         if not 0.0 <= self.min_quality_score <= 1.0:
             raise ValueError("min_quality_score must be between 0 and 1")
+        if not self.execution_timeframe_label.strip():
+            raise ValueError("execution_timeframe_label is required")
+        if not self.setup_version.strip():
+            raise ValueError("setup_version is required")
 
 
 def generate_scored_multitimeframe_pullback_signals_fast(
@@ -58,13 +64,12 @@ def generate_scored_multitimeframe_pullback_signals_fast(
     execution_bars: pd.DataFrame,
     config: ScoredMultiTimeframeRunnerConfig | None = None,
 ) -> list[CandidateSignal]:
-    """V5: hard structural validity + soft quality ranking.
+    """Hard structural validity + soft quality ranking.
 
-    V4 required every momentum threshold to pass. V5 still requires a valid
-    1h/15m trend alignment, confirmed 1m event sequence, intact key location,
-    phase directions and micro reclaim. Strength is graded instead of being an
-    all-or-nothing conjunction. This gives the seven-symbol coordinator a
-    comparable quality score when several markets qualify at once.
+    V5 used this on 1m execution. V6 reuses exactly the same structural/score
+    code on a coarser execution frame. The timeframe label is metadata only; it
+    does not alter candidate mathematics, which keeps the A/B implementation
+    auditable.
     """
     cfg = config or ScoredMultiTimeframeRunnerConfig()
     cfg.validate()
@@ -140,7 +145,7 @@ def generate_scored_multitimeframe_pullback_signals_fast(
         metadata = evaluation.to_dict()
         metadata.update(
             {
-                "setup_version": "V5_SCORED_MTF_PULLBACK",
+                "setup_version": cfg.setup_version,
                 "quality_score": float(score.quality_score),
                 "quality_components": score.components,
                 "quality_hard_gates": score.hard_gates,
@@ -152,7 +157,7 @@ def generate_scored_multitimeframe_pullback_signals_fast(
                 "context_timeframe": "15m",
                 "context_regime": context_structure.regime.value,
                 "context_efficiency": float(context_structure.trend_efficiency),
-                "execution_timeframe": "1m",
+                "execution_timeframe": cfg.execution_timeframe_label,
                 "multitimeframe_alignment": True,
             }
         )
@@ -160,7 +165,7 @@ def generate_scored_multitimeframe_pullback_signals_fast(
             CandidateSignal(
                 index=i,
                 timestamp=execution.loc[i, "timestamp"],
-                setup="TREND_PULLBACK_EVENT_V5_SCORED_MTF",
+                setup=f"TREND_PULLBACK_EVENT_{cfg.setup_version}",
                 side=evaluation.side,
                 entry_reference=evaluation.entry_reference,
                 invalidation_reference=float(evaluation.invalidation_reference),

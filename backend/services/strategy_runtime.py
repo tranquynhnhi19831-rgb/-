@@ -171,5 +171,6 @@ class JiangheV1ClosedCandleEvaluator:
         )
 
     def evaluate_symbol(self, symbol: str) -> CandidateIntent | None:
-        frames = self.provider.fetch_multitimeframe(symbol)
+        provider = self.provider.fork()
+        frames = provider.fetch_multitimeframe(symbol)
         return self.evaluate_frames(frames).candidate

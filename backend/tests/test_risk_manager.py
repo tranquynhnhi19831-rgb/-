@@ -21,6 +21,7 @@ def context(**overrides):
         "trades_today": 0,
         "open_positions": 0,
         "consecutive_losses": 0,
+        "day_start_equity": 100.0,
     }
     data.update(overrides)
     return RiskContext(**data)
@@ -35,7 +36,7 @@ def test_blocks_at_two_percent_daily_loss():
     manager = RiskManager()
     allowed, reason = manager.check(
         BASE_CFG,
-        context(daily_pnl=-2.0),
+        context(equity=98.0, daily_pnl=-2.0),
         "BTC/USDT",
         rr=1.8,
         leverage=1,
@@ -45,9 +46,33 @@ def test_blocks_at_two_percent_daily_loss():
     assert "每日最大亏损" in reason
 
 
+def test_daily_loss_uses_start_of_day_equity_not_shrunken_current_equity():
+    manager = RiskManager()
+    decision = manager.evaluate(
+        BASE_CFG,
+        context(equity=98.01, daily_pnl=-1.99, day_start_equity=100.0),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert decision.allowed
+
+    decision = manager.evaluate(
+        BASE_CFG,
+        context(equity=98.0, daily_pnl=-2.0, day_start_equity=100.0),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert not decision.allowed
+    assert decision.code == "MAX_DAILY_LOSS_REACHED"
+
+
 def test_blocks_leverage_above_configured_limit():
     manager = RiskManager()
-    allowed, _ = manager.check(
+    decision = manager.evaluate(
         BASE_CFG,
         context(),
         "BTC/USDT",
@@ -55,7 +80,23 @@ def test_blocks_leverage_above_configured_limit():
         leverage=4,
         margin_ratio=0.05,
     )
-    assert not allowed
+    assert not decision.allowed
+    assert decision.code == "MAX_LEVERAGE_EXCEEDED"
+
+
+def test_daily_trade_limit_has_stable_reason_code():
+    manager = RiskManager()
+    decision = manager.evaluate(
+        BASE_CFG,
+        context(trades_today=3),
+        "BTC/USDT",
+        rr=1.8,
+        leverage=1,
+        margin_ratio=0.05,
+    )
+    assert not decision.allowed
+    assert decision.code == "MAX_TRADES_PER_DAY_REACHED"
+    assert "单日交易上限" in decision.message
 
 
 def test_allows_valid_small_account_trade_context():

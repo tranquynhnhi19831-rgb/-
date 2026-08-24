@@ -40,6 +40,31 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  windows-ops:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              Write-Host "PowerShell parse errors in $($_.FullName):" -ForegroundColor Red
+              $parseErrors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "PowerShell scripts parse cleanly on Windows PowerShell 5.1."
+
   s6-acceptance:
     needs: backend
     if: contains(github.ref, 'jianghe-s6-5-acceptance') || contains(github.head_ref, 'jianghe-s6-5-acceptance')

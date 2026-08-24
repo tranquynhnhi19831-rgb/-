@@ -9,7 +9,7 @@ export default function Settings() {
 
   return <ConfigForm cfg={cfg} setCfg={setCfg}
     onSave={async () => { alert(JSON.stringify((await api.post('/api/config', cfg)).data)) }}
-    onTestBinance={async () => alert(JSON.stringify((await api.post('/api/config/test-binance', { api_key: cfg.binance_api_key, secret: cfg.binance_secret, testnet: cfg.testnet })).data))}
+    onTestBinance={async () => alert(JSON.stringify((await api.post('/api/config/test-binance', {})).data))}
     onTestDeepseek={async () => alert(JSON.stringify((await api.post('/api/config/test-deepseek', { api_key: cfg.deepseek_api_key })).data))}
   />
 }

@@ -104,11 +104,13 @@ export default function LiveBoard() {
 
         {error && <div className="card">{error}，当前显示上一次成功快照。</div>}
 
-        <section className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
           <Metric title="初始资金" value={`${money(snapshot.account.initial_capital_usdt)} U`} />
           <Metric title="当前权益" value={`${money(snapshot.account.equity)} U`} />
           <Metric title="累计收益" value={`${money(snapshot.account.total_return_pct)}%`} />
+          <Metric title="今日已实现" value={`${money(snapshot.account.daily_pnl)} U`} />
           <Metric title="未实现盈亏" value={`${money(positionPnl)} U`} />
+          <Metric title="最大回撤" value={`${money(snapshot.account.max_drawdown * 100)}%`} />
           <Metric title="已完成交易" value={`${snapshot.statistics.closed_trades}`} />
           <Metric title="胜率" value={`${money(snapshot.statistics.win_rate_pct)}%`} />
         </section>
@@ -157,7 +159,7 @@ export default function LiveBoard() {
           {snapshot.recent_trades.length === 0 ? (
             <div className="py-6 text-slate-400">暂无交易记录</div>
           ) : (
-            <table className="w-full text-sm min-w-[900px]">
+            <table className="w-full text-sm min-w-[1050px]">
               <thead className="text-slate-400 text-left">
                 <tr>
                   <th className="py-2">标的</th>
@@ -182,7 +184,9 @@ export default function LiveBoard() {
                     <td>{money(row.pnl)} U</td>
                     <td>{money(row.fee, 4)} U</td>
                     <td>{row.dry_run ? 'DRY-RUN' : 'LIVE'}</td>
-                    <td className="max-w-xs text-slate-300">{row.strategy_reason || '-'}</td>
+                    <td className="w-[24rem] max-w-[24rem] whitespace-normal break-words text-slate-300">
+                      <StrategyReason value={row.strategy_reason} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -195,6 +199,18 @@ export default function LiveBoard() {
         </footer>
       </div>
     </main>
+  )
+}
+
+function StrategyReason({ value }: { value: string }) {
+  if (!value) return <>-</>
+  const [setup, ...rest] = value.split(';')
+  const details = rest.join(';').trim()
+  return (
+    <div className="space-y-1">
+      <div className="font-medium text-slate-200">{setup}</div>
+      {details && <div className="text-xs leading-5 text-slate-400">{details.split(',').join(' · ')}</div>}
+    </div>
   )
 }
 

@@ -1,5 +1,14 @@
 from models.database import Base, engine
-from models import config_model, trade, signal, position, log, account_snapshot, risk_event  # noqa
+from models import (  # noqa
+    account_snapshot,
+    config_model,
+    log,
+    position,
+    risk_event,
+    signal,
+    trade,
+    trade_decision,
+)
 
 
 def init_db() -> None:

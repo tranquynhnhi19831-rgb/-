@@ -111,7 +111,8 @@ def generate_multitimeframe_event_pullback_signals_fast(
     No future macro/context candle is visible early: both higher-timeframe end
     indices are located with ``searchsorted(..., side='right')`` against the
     current 1m candle close. Structures are reclassified only when a new closed
-    higher-timeframe bar becomes visible.
+    higher-timeframe bar becomes visible. The same confirmed 1m pullback swing
+    may emit at most one signal; a new swing event is required before re-entry.
     """
 
     cfg = config or MultiTimeframeRunnerConfig()
@@ -129,6 +130,7 @@ def generate_multitimeframe_event_pullback_signals_fast(
 
     signals: list[CandidateSignal] = []
     last_emitted: dict[str, int] = {}
+    seen_events: set[tuple[str, int]] = set()
     last_macro_end = -1
     last_ctx_end = -1
     macro_structure: StructureSnapshot | None = None
@@ -167,6 +169,13 @@ def generate_multitimeframe_event_pullback_signals_fast(
         )
         if not evaluation.candidate or evaluation.side is None or evaluation.invalidation_reference is None:
             continue
+        if evaluation.pullback_end_index is None:
+            continue
+
+        event_anchor = ex_start + int(evaluation.pullback_end_index)
+        event_key = (evaluation.side, event_anchor)
+        if event_key in seen_events:
+            continue
 
         previous = last_emitted.get(evaluation.side)
         if previous is not None and i - previous <= cfg.signal_cooldown_bars:
@@ -175,6 +184,7 @@ def generate_multitimeframe_event_pullback_signals_fast(
         metadata = evaluation.to_dict()
         metadata.update(
             {
+                "event_pullback_index_abs": int(event_anchor),
                 "macro_timeframe": "1h",
                 "macro_regime": macro_structure.regime.value,
                 "macro_efficiency": float(macro_structure.trend_efficiency),
@@ -197,6 +207,7 @@ def generate_multitimeframe_event_pullback_signals_fast(
                 metadata=metadata,
             )
         )
+        seen_events.add(event_key)
         last_emitted[evaluation.side] = i
 
     return signals

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 import pandas as pd
@@ -73,6 +73,10 @@ class SevenSymbolPortfolioBacktester:
     ranked by quality score, then by the fixed universe order. One chosen trade
     blocks every other symbol until it exits. Daily trade/loss and consecutive-
     loss limits are global, matching the intended autonomous runtime semantics.
+
+    The consecutive-loss guard is a UTC-day cooldown, not a permanent account
+    lock. Three losses can block the remainder of that UTC day, but the next UTC
+    day starts with a fresh loss streak.
     """
 
     def __init__(
@@ -248,6 +252,7 @@ class SevenSymbolPortfolioBacktester:
         realized_per_day: dict[Any, float] = defaultdict(float)
         day_start_equity: dict[Any, float] = {}
         consecutive_losses = 0
+        loss_streak_day = None
         arbitration_skips = 0
         occupied_skips = 0
         risk_skips = 0
@@ -264,6 +269,9 @@ class SevenSymbolPortfolioBacktester:
                 key=lambda item: (-float(item.score), self._universe_rank(item.symbol), item.setup, item.side),
             )
             day = signal_time.date()
+            if loss_streak_day != day:
+                consecutive_losses = 0
+                loss_streak_day = day
             if day not in day_start_equity:
                 day_start_equity[day] = equity
             if trades_per_day[day] >= self.max_trades_per_day:
@@ -297,7 +305,15 @@ class SevenSymbolPortfolioBacktester:
                 day_start_equity[entry_day] = float(chosen.equity_before)
             trades_per_day[entry_day] += 1
             realized_per_day[exit_day] += float(chosen.net_pnl)
+
+            # A loss streak belongs to the UTC day on which the result is
+            # realized. A trade spanning midnight must not carry yesterday's
+            # streak into today's cooldown, and a new UTC day always starts at 0.
+            if loss_streak_day != exit_day:
+                consecutive_losses = 0
+                loss_streak_day = exit_day
             consecutive_losses = consecutive_losses + 1 if chosen.net_pnl < 0 else 0
+
             next_free_time = pd.to_datetime(chosen.exit_time, utc=True)
             if equity <= 0:
                 break
@@ -346,6 +362,7 @@ class SevenSymbolPortfolioBacktester:
             "max_trades_per_day": self.max_trades_per_day,
             "max_daily_loss": self.max_daily_loss,
             "max_consecutive_losses": self.max_consecutive_losses,
+            "consecutive_loss_scope": "UTC_DAY",
             "max_open_positions": 1,
         }
         return PortfolioBacktestResult(

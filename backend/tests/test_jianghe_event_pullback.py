@@ -14,8 +14,8 @@ def _bull_event_fixture() -> pd.DataFrame:
         (101.00, 102.00, 100.80, 101.80),
         (101.80, 102.90, 101.60, 102.60),  # confirmed swing high H1
         (102.60, 102.70, 101.90, 102.20),
-        (102.20, 102.30, 101.40, 101.80),
-        (101.80, 101.90, 101.10, 101.50),
+        (102.20, 102.45, 101.80, 102.35),  # overlap/chop weakens the pullback leg
+        (102.35, 102.45, 101.10, 101.50),
         (101.50, 101.60, 100.80, 101.30),  # confirmed pullback swing low L2
         (101.30, 101.80, 101.10, 101.50),
         (101.50, 102.00, 101.30, 101.80),
@@ -49,7 +49,7 @@ def _mirror(df: pd.DataFrame, anchor: float = 220.0) -> pd.DataFrame:
 
 
 def _bear_structure() -> StructureSnapshot:
-    # Bull support 100.75 mirrors to bear resistance 119.25 around 220.
+    # Bull support 100.75 mirrors to bear resistance 119.25 around anchor 220.
     return StructureSnapshot(
         regime=MarketRegime.BEAR_TREND,
         trend_efficiency=0.48,
@@ -72,8 +72,8 @@ def test_event_pullback_uses_confirmed_variable_length_phases():
     assert result.impulse_end_index == 6
     assert result.pullback_end_index == 10
     assert result.impulse_bars == 5
-    assert result.pullback_bars == 5
-    assert result.trigger_bars == 5
+    assert result.pullback_bars == 4
+    assert result.trigger_bars == 4
     assert all(result.gates.values())
     assert result.pullback_strength < result.impulse_strength
     assert "EVENT_DRIVEN_PHASES" in result.reason_codes

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
 
 from backtest.binance_vision import fetch_usdm_ohlcv_vision
 from backtest.engine import BacktestEngine
-from backtest.jianghe_runner import generate_jianghe_signals_fast, quality_first_v2_config
+from backtest.jianghe_research_fast import generate_jianghe_signals_research_fast
+from backtest.jianghe_runner import quality_first_v2_config
 from backtest.types import BacktestConfig
 
 
@@ -80,7 +80,7 @@ def main() -> None:
     context = fetch_usdm_ohlcv_vision(args.symbol, "15m", args.start, args.end, timeout_seconds=60)
     execution = fetch_usdm_ohlcv_vision(args.symbol, "1m", args.start, args.end, timeout_seconds=60)
     cfg = quality_first_v2_config()
-    signals = generate_jianghe_signals_fast(context, execution, cfg)
+    signals = generate_jianghe_signals_research_fast(context, execution, cfg)
 
     engine = BacktestEngine(
         BacktestConfig(
@@ -160,6 +160,7 @@ def main() -> None:
         "start": args.start,
         "end": args.end,
         "profile": "QUALITY_FIRST_V2",
+        "research_runner": "SEMANTICS_PRESERVING_REGIME_SHORT_CIRCUIT",
         "signals": len(signals),
         "trades": len(result.trades),
         "metrics": result.metrics,

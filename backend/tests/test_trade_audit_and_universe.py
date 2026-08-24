@@ -1,10 +1,12 @@
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config import INITIAL_TRADING_UNIVERSE
 from models.database import Base
 from models.trade_decision import TradeDecision
-from services.trade_audit_service import decode_json_field
+from services.trade_audit_service import add_trade_decision, decode_json_field
 from services.universe_scanner import CandidateIntent, audit_and_select_candidate, rank_candidates
 
 
@@ -90,6 +92,43 @@ def test_audit_persists_all_qualified_candidates_and_one_selected_winner():
         candidate = rows[0]
         assert "BULL_TREND_CONTEXT" in decode_json_field(candidate.reason_codes_json, [])
         assert decode_json_field(candidate.evidence_json, {})["context_efficiency"] == 0.42
+    finally:
+        db.close()
+
+
+def test_audit_redacts_sensitive_fields_and_signature_query(monkeypatch):
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "demo-key-value")
+    monkeypatch.setenv("BINANCE_TESTNET_SECRET", "demo-secret-value")
+    db = _db()
+    try:
+        row = add_trade_decision(
+            db,
+            cycle_id="redact-1",
+            symbol="BTC/USDT",
+            setup="TEST",
+            side="LONG",
+            stage="EXCHANGE_ORDER",
+            outcome="REJECTED",
+            evidence={
+                "apiKey": "demo-key-value",
+                "secret": "demo-secret-value",
+                "nested": {"signature": "abc123", "safe": "keep-me"},
+            },
+            risk_message=(
+                "request failed api=demo-key-value secret=demo-secret-value "
+                "?symbol=BTCUSDT&signature=abcdef123456"
+            ),
+        )
+
+        evidence = json.loads(row.evidence_json)
+        assert evidence["apiKey"] == "[REDACTED]"
+        assert evidence["secret"] == "[REDACTED]"
+        assert evidence["nested"]["signature"] == "[REDACTED]"
+        assert evidence["nested"]["safe"] == "keep-me"
+        assert "demo-key-value" not in row.risk_message
+        assert "demo-secret-value" not in row.risk_message
+        assert "abcdef123456" not in row.risk_message
+        assert "signature=[REDACTED]" in row.risk_message
     finally:
         db.close()
 

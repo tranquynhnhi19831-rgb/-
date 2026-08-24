@@ -23,5 +23,6 @@ class RuntimeState(Base):
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)
     last_cycle_id = Column(String, nullable=False, default="")
+    last_execution_close_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(Text, nullable=False, default="")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -56,6 +56,37 @@ def realized_pnl_for_utc_day(db, target_day: date | None = None) -> float:
     return float(value or 0.0)
 
 
+def consecutive_losses_for_utc_day(db, target_day: date | None = None) -> int:
+    """Count the current realized-loss streak inside one UTC calendar day.
+
+    The streak is based on trade *close* time because a win/loss becomes known
+    only when realized. A position opened before midnight and closed after
+    midnight therefore belongs to the new UTC day's cooldown. Previous-day
+    losses can never permanently deadlock the next day.
+    """
+
+    day = target_day or datetime.now(timezone.utc).date()
+    with db.no_autoflush:
+        rows = (
+            db.query(Trade.pnl)
+            .filter(
+                Trade.close_time.isnot(None),
+                func.date(Trade.close_time) == day.isoformat(),
+            )
+            .order_by(desc(Trade.close_time), desc(Trade.id))
+            .all()
+        )
+
+    count = 0
+    for row in rows:
+        pnl = float(row[0] or 0.0)
+        if pnl < 0:
+            count += 1
+            continue
+        break
+    return count
+
+
 def trades_opened_on_utc_day(db, target_day: date | None = None) -> int:
     day = target_day or datetime.now(timezone.utc).date()
     with db.no_autoflush:

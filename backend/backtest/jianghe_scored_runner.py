@@ -31,6 +31,7 @@ class ScoredMultiTimeframeRunnerConfig:
     min_quality_score: float = 0.55
     execution_timeframe_label: str = "1m"
     setup_version: str = "V5_SCORED_MTF_PULLBACK"
+    setup_name: str = "TREND_PULLBACK_EVENT_V5_SCORED_MTF"
     event_config: EventPullbackConfig = field(default_factory=EventPullbackConfig)
 
     def alignment_config(self) -> MultiTimeframeRunnerConfig:
@@ -56,6 +57,8 @@ class ScoredMultiTimeframeRunnerConfig:
             raise ValueError("execution_timeframe_label is required")
         if not self.setup_version.strip():
             raise ValueError("setup_version is required")
+        if not self.setup_name.strip():
+            raise ValueError("setup_name is required")
 
 
 def generate_scored_multitimeframe_pullback_signals_fast(
@@ -67,9 +70,8 @@ def generate_scored_multitimeframe_pullback_signals_fast(
     """Hard structural validity + soft quality ranking.
 
     V5 used this on 1m execution. V6 reuses exactly the same structural/score
-    code on a coarser execution frame. The timeframe label is metadata only; it
-    does not alter candidate mathematics, which keeps the A/B implementation
-    auditable.
+    code on a coarser execution frame. The timeframe label and setup identity
+    are metadata only; they do not alter candidate mathematics.
     """
     cfg = config or ScoredMultiTimeframeRunnerConfig()
     cfg.validate()
@@ -165,7 +167,7 @@ def generate_scored_multitimeframe_pullback_signals_fast(
             CandidateSignal(
                 index=i,
                 timestamp=execution.loc[i, "timestamp"],
-                setup=f"TREND_PULLBACK_EVENT_{cfg.setup_version}",
+                setup=cfg.setup_name,
                 side=evaluation.side,
                 entry_reference=evaluation.entry_reference,
                 invalidation_reference=float(evaluation.invalidation_reference),
